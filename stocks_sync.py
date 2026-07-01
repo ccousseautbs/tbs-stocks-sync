@@ -87,7 +87,7 @@ def build_gtin_index():
             gtin     = row[idx_gtin].strip().strip('"') if idx_gtin < len(row) else ''
 
             if gtin and offer_id:
-                gtin_index[gtin] = offer_id
+                gtin_index[gtin] = offer_id.lower()
                 count += 1
 
     # Traiter le dernier fragment
