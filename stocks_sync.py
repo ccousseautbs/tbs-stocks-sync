@@ -30,13 +30,11 @@ SCOPES      = [
     'https://www.googleapis.com/auth/content',
     'https://www.googleapis.com/auth/spreadsheets',
 ]
-# Merchant API base URL
 MERCHANT_API_BASE = 'https://merchantapi.googleapis.com/inventories/v1'
 # ────────────────────────────────────────────────────────────
 
 
 def get_credentials():
-    """Auth via la clé de service stockée dans GCP_KEY."""
     key_json = os.environ.get('GCP_KEY')
     if not key_json:
         raise ValueError("Variable d'environnement GCP_KEY manquante.")
@@ -53,7 +51,6 @@ def get_sheets_service(creds):
 
 
 def build_gtin_index():
-    """Lit le flux Lengow (séparateur virgule) et construit index GTIN → offer_id."""
     log.info(f"Lecture flux Lengow : {LENGOW_URL}")
     response = requests.get(LENGOW_URL, stream=True, timeout=300)
     response.raise_for_status()
@@ -111,7 +108,6 @@ def build_gtin_index():
 
 
 def stream_and_filter(gtin_index):
-    """Lit le CSV stocks en streaming et filtre les lignes utiles."""
     log.info(f"Téléchargement stocks en streaming : {STOCKS_URL}")
     response = requests.get(STOCKS_URL, stream=True, timeout=300)
     response.raise_for_status()
@@ -205,16 +201,10 @@ def stream_and_filter(gtin_index):
 
 
 def build_product_name(offer_id):
-    """
-    Construit le nom de produit Merchant API.
-    Format : accounts/{merchantId}/products/online~fr~FR~{offer_id}
-    Les ~ remplacent les : de l'ancien format Content API.
-    """
     return f"accounts/{MERCHANT_ID}/products/online~fr~FR~{offer_id}"
 
 
 def push_local_inventory(creds, products):
-    """Pousse l'inventaire local via Merchant Inventories API v1."""
     log.info(f"Push inventaire local pour {len(products)} produits...")
 
     token   = creds.token
@@ -230,48 +220,16 @@ def push_local_inventory(creds, products):
         product_name = build_product_name(p['offer_id'])
         url = f"{MERCHANT_API_BASE}/{product_name}/localInventories:insert"
 
+        # Construire localInventoryAttributes
         local_attrs = {
-    'availability': p['availability'].upper().replace(' ', '_'),
-    'quantity':     p['quantity'],
-}
-
-if p['price_amount']:
-    try:
-        local_attrs['price'] = {
-            'amountMicros': str(int(float(p['price_amount']) * 1_000_000)),
-            'currencyCode': p['price_currency'],
-        }
-    except ValueError:
-        pass
-
-if p['sale_amount']:
-    try:
-        local_attrs['salePrice'] = {
-            'amountMicros': str(int(float(p['sale_amount']) * 1_000_000)),
-            'currencyCode': p['sale_currency'],
-        }
-    except ValueError:
-        pass
-
-if p['sale_date']:
-    date_parts = p['sale_date'].split('/')
-    if len(date_parts) == 2:
-        local_attrs['salePriceEffectiveDate'] = {
-                    'startTime': date_parts[0],
-                    'endTime':   date_parts[1],
-                }
-        
-        body = {
-            'storeCode':               p['store_code'],
-            'localInventoryAttributes': local_attrs,
+            'availability': p['availability'].upper().replace(' ', '_'),
+            'quantity':     p['quantity'],
         }
 
         if p['price_amount']:
-            # Merchant API attend les prix en micros
             try:
-                amount_micros = int(float(p['price_amount']) * 1_000_000)
-                body['price'] = {
-                    'amountMicros': amount_micros,
+                local_attrs['price'] = {
+                    'amountMicros': str(int(float(p['price_amount']) * 1_000_000)),
                     'currencyCode': p['price_currency'],
                 }
             except ValueError:
@@ -279,23 +237,25 @@ if p['sale_date']:
 
         if p['sale_amount']:
             try:
-                sale_micros = int(float(p['sale_amount']) * 1_000_000)
-                body['salePrice'] = {
-                    'amountMicros': sale_micros,
+                local_attrs['salePrice'] = {
+                    'amountMicros': str(int(float(p['sale_amount']) * 1_000_000)),
                     'currencyCode': p['sale_currency'],
                 }
             except ValueError:
                 pass
 
         if p['sale_date']:
-            # Format Merchant API : startTime/endTime séparés
-            # Input : "2026-06-24T00:00+02:00/2026-07-21T23:59+02:00"
             date_parts = p['sale_date'].split('/')
             if len(date_parts) == 2:
-                body['salePriceEffectiveDate'] = {
+                local_attrs['salePriceEffectiveDate'] = {
                     'startTime': date_parts[0],
                     'endTime':   date_parts[1],
                 }
+
+        body = {
+            'storeCode':                p['store_code'],
+            'localInventoryAttributes': local_attrs,
+        }
 
         try:
             resp = requests.post(url, headers=headers, json=body, timeout=30)
@@ -310,18 +270,16 @@ if p['sale_date']:
         except Exception as e:
             errors.append({'product': p['offer_id'], 'error': str(e)})
 
-        # Log progression tous les 50 produits
         if (i + 1) % 50 == 0:
             log.info(f"  Progression : {i + 1}/{len(products)} — {success} OK / {len(errors)} erreurs")
 
-        time.sleep(0.1)  # 10 req/s max
+        time.sleep(0.1)
 
     log.info(f"Push terminé — {success} OK / {len(errors)} erreurs")
     return success, errors
 
 
 def write_to_sheet(sheets, products):
-    """Écrit le résultat dans le Sheet pour visibilité."""
     log.info(f"Écriture dans Sheet — onglet {TAB_NAME}...")
 
     headers_row = ['id', 'store_code', 'availability', 'price', 'sale_price', 'quantity']
@@ -352,8 +310,8 @@ def write_to_sheet(sheets, products):
 
 
 def main():
-    creds    = get_credentials()
-    sheets   = get_sheets_service(creds)
+    creds  = get_credentials()
+    sheets = get_sheets_service(creds)
 
     gtin_index = build_gtin_index()
     products   = stream_and_filter(gtin_index)
@@ -371,7 +329,7 @@ def main():
     log.info(f"❌ Erreurs : {len(errors)}")
     if errors:
         for e in errors[:10]:
-            log.error(f"  {e.get('product')} [{e.get('status','')}] : {e.get('error','')[:150]}")
+            log.error(f"  {e.get('product')} [{e.get('status', '')}] : {e.get('error', '')[:150]}")
 
 
 if __name__ == '__main__':
