@@ -230,10 +230,40 @@ def push_local_inventory(creds, products):
         product_name = build_product_name(p['offer_id'])
         url = f"{MERCHANT_API_BASE}/{product_name}/localInventories:insert"
 
+        local_attrs = {
+    'availability': p['availability'].upper().replace(' ', '_'),
+    'quantity':     p['quantity'],
+}
+
+if p['price_amount']:
+    try:
+        local_attrs['price'] = {
+            'amountMicros': str(int(float(p['price_amount']) * 1_000_000)),
+            'currencyCode': p['price_currency'],
+        }
+    except ValueError:
+        pass
+
+if p['sale_amount']:
+    try:
+        local_attrs['salePrice'] = {
+            'amountMicros': str(int(float(p['sale_amount']) * 1_000_000)),
+            'currencyCode': p['sale_currency'],
+        }
+    except ValueError:
+        pass
+
+if p['sale_date']:
+    date_parts = p['sale_date'].split('/')
+    if len(date_parts) == 2:
+        local_attrs['salePriceEffectiveDate'] = {
+                    'startTime': date_parts[0],
+                    'endTime':   date_parts[1],
+                }
+        
         body = {
-            'storeCode':    p['store_code'],
-            'availability': p['availability'],
-            'quantity':     p['quantity'],
+            'storeCode':               p['store_code'],
+            'localInventoryAttributes': local_attrs,
         }
 
         if p['price_amount']:
