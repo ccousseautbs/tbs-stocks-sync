@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 STOCKS_URL      = 'https://tbs.fr/Storage/Lengow/stocks.csv'
 LENGOW_URL      = 'https://tbs.fr/Storage/Lengow/Lengow.csv'
 MERCHANT_ID     = '110798793'
-DEVELOPER_EMAIL = 'ccousseau@tbs.fr'  # ← ton email GMC/Google
+DEVELOPER_EMAIL = 'ton@email.com'  # ← ton email GMC/Google
 SHEET_ID        = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
 TAB_NAME        = 'Stocks'
 SCOPES          = [
@@ -223,7 +223,7 @@ def stream_and_filter(gtin_index):
 
 
 def build_product_name(offer_id):
-    return f"accounts/{MERCHANT_ID}/products/online~fr~FR~{offer_id}"
+    return f"accounts/{MERCHANT_ID}/products/local~fr~FR~{offer_id}"
 
 
 def push_local_inventory(creds, products):
@@ -353,7 +353,7 @@ def main():
     log.info(f"❌ Erreurs : {len(errors)}")
     if errors:
         for e in errors[:10]:
-            log.error(f"  {e.get('product')} [{e.get('status', '')}] : {e.get('error', '')[:500]}")
+            log.error(f"  {e.get('product')} [{e.get('status', '')}] : {e.get('error', '')[:150]}")
 
 
 if __name__ == '__main__':
