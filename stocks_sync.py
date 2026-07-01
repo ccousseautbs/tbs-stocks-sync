@@ -68,16 +68,15 @@ def build_gtin_index():
 
             if headers is None:
                 headers = row
-                # Chercher les colonnes offer_id et gtin
                 try:
-                    idx_offer = headers.index('offer_id')
+                    idx_offer = headers.index('IDENTIFIER')
                 except ValueError:
-                    idx_offer = 0  # première colonne par défaut
-                # GTIN peut s'appeler gtins_01 dans le flux Lengow
-                gtin_cols = [i for i, h in enumerate(headers)
-                             if 'gtin' in h.lower()]
-                idx_gtin  = gtin_cols[0] if gtin_cols else None
-                log.info(f"Lengow — offer_id col: {idx_offer}, gtin col: {idx_gtin}")
+                    idx_offer = 0
+                try:
+                    idx_gtin = headers.index('EAN')
+                except ValueError:
+                    idx_gtin = None
+                log.info(f"Lengow — offer_id col: {idx_offer} (IDENTIFIER), gtin col: {idx_gtin} (EAN)")
                 continue
 
             if idx_gtin is None:
