@@ -77,7 +77,7 @@ def build_gtin_index():
                     idx_gtin = headers.index('ean')
                 except ValueError:
                     idx_gtin = None
-                log.info(f"Lengow — offer_id col: {idx_offer} (IDENTIFIER), gtin col: {idx_gtin} (EAN)")
+                log.info(f"Headers bruts : {[repr(h) for h in headers[:15]]}")
                 continue
 
             if idx_gtin is None:
