@@ -64,6 +64,8 @@ def stream_and_filter():
 
             if headers is None:
                 headers   = row
+                # Renommer 'id' en 'gtin' pour GMC Local Inventory
+                headers = ['gtin' if h == 'id' else h for h in headers]
                 idx_avail = headers.index('availability')
                 idx_store = headers.index('store_code')
                 filtered.append(headers)
