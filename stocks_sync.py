@@ -137,7 +137,7 @@ def stream_and_filter(gtin_index):
                 idx_store = headers.index('store_code')
                 idx_id    = headers.index('id')
                 # Remplacer 'id' par 'itemid' + ajouter 'gtin'
-                new_headers = ['itemid' if h == 'id' else h for h in headers]
+                new_headers = ['id' if h == 'id' else h for h in headers]
                 new_headers.append('gtin')
                 filtered.append(new_headers)
                 log.info(f"Colonnes stocks : {new_headers}")
