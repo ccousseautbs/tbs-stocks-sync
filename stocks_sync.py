@@ -353,7 +353,7 @@ def main():
     log.info(f"❌ Erreurs : {len(errors)}")
     if errors:
         for e in errors[:10]:
-            log.error(f"  {e.get('product')} [{e.get('status', '')}] : {e.get('error', '')[:150]}")
+            log.error(f"  {e.get('product')} [{e.get('status', '')}] : {e.get('error', '')[:500]}")
 
 
 if __name__ == '__main__':
