@@ -74,7 +74,7 @@ def build_gtin_index():
                 except ValueError:
                     idx_offer = 0
                 try:
-                    idx_gtin = headers.index('ean')
+                    idx_gtin = headers.index('EAN')
                 except ValueError:
                     idx_gtin = None
                 log.info(f"Headers bruts : {[repr(h) for h in headers[:15]]}")
