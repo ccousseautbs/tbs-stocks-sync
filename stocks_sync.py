@@ -67,6 +67,7 @@ def build_gtin_index():
             row = next(csv.reader([line], delimiter=','))
 
             if headers is None:
+                headers = [h.strip().strip("'\"") for h in row]
                 headers = row
                 # Chercher les colonnes offer_id et gtin
                 try:
@@ -77,7 +78,6 @@ def build_gtin_index():
                     idx_gtin = headers.index('EAN')
                 except ValueError:
                     idx_gtin = None
-                log.info(f"Headers bruts : {[repr(h) for h in headers[:15]]}")
                 continue
 
             if idx_gtin is None:
