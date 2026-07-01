@@ -39,8 +39,8 @@ def get_sheets_service():
 
 def build_gtin_index():
     """
-    Lit le flux Lengow et construit un index gtin → offer_id.
-    Le flux Lengow est séparé par | d'après les analyses précédentes.
+    Lit le flux Lengow (séparateur virgule) et construit un index gtin → offer_id.
+    Colonnes : identifier (offer_id), EAN (gtin)
     """
     log.info(f"Lecture flux Lengow : {LENGOW_URL}")
     response = requests.get(LENGOW_URL, stream=True, timeout=300)
@@ -50,7 +50,6 @@ def build_gtin_index():
     headers    = None
     idx_offer  = None
     idx_gtin   = None
-    count      = 0
 
     buffer = ''
     for chunk in response.iter_content(chunk_size=1024 * 1024, decode_unicode=True):
@@ -63,39 +62,38 @@ def build_gtin_index():
             if not line:
                 continue
 
-            # Détecter le séparateur : | pour Lengow
-            row = next(csv.reader([line], delimiter='|'))
+            # Flux Lengow.csv — séparateur virgule
+            row = next(csv.reader([line], delimiter=','))
 
             if headers is None:
-                headers = [h.strip().strip("'\"") for h in row]
-                # Chercher les colonnes offer_id et gtin
+                # Nettoyer les guillemets parasites
+                headers   = [h.strip().strip("'\"") for h in row]
                 try:
-                    idx_offer = headers.index('IDENTIFIER')
+                    idx_offer = headers.index('identifier')
                 except ValueError:
                     idx_offer = 0
                 try:
                     idx_gtin = headers.index('EAN')
                 except ValueError:
                     idx_gtin = None
-                log.info(f"Lengow — offer_id col: {idx_offer} (IDENTIFIER), gtin col: {idx_gtin} (EAN)")
+                log.info(f"Lengow — colonnes : {len(headers)} | offer_id: {idx_offer} | gtin: {idx_gtin}")
                 continue
 
             if idx_gtin is None:
                 continue
 
-            offer_id = row[idx_offer].strip() if idx_offer < len(row) else ''
-            gtin     = row[idx_gtin].strip().strip('"') if idx_gtin < len(row) else ''
+            offer_id = row[idx_offer].strip().strip("'\"") if idx_offer < len(row) else ''
+            gtin     = row[idx_gtin].strip().strip("'\"") if idx_gtin  < len(row) else ''
 
             if gtin and offer_id:
                 gtin_index[gtin] = offer_id.lower()
-                count += 1
 
     # Traiter le dernier fragment
-    if buffer.strip() and headers:
-        row = next(csv.reader([buffer.strip()], delimiter='|'))
-        if len(row) > max(idx_offer, idx_gtin or 0):
-            offer_id = row[idx_offer].strip()
-            gtin     = row[idx_gtin].strip().strip('"') if idx_gtin else ''
+    if buffer.strip() and headers and idx_gtin is not None:
+        row = next(csv.reader([buffer.strip()], delimiter=','))
+        if len(row) > max(idx_offer, idx_gtin):
+            offer_id = row[idx_offer].strip().strip("'\"")
+            gtin     = row[idx_gtin].strip().strip("'\"")
             if gtin and offer_id:
                 gtin_index[gtin] = offer_id.lower()
 
@@ -129,16 +127,16 @@ def stream_and_filter(gtin_index):
             if not line:
                 continue
 
+            # Flux stocks — séparateur point-virgule
             row = next(csv.reader([line], delimiter=';'))
 
             if headers is None:
-                headers   = row
+                headers   = [h.strip().strip("'\"") for h in row]
                 idx_avail = headers.index('availability')
                 idx_store = headers.index('store_code')
                 idx_id    = headers.index('id')
-                new_headers = list(headers)
-                filtered.append(new_headers)
-                log.info(f"Colonnes stocks : {new_headers}")
+                filtered.append(headers)
+                log.info(f"Colonnes stocks : {headers}")
                 continue
 
             total += 1
@@ -147,15 +145,29 @@ def stream_and_filter(gtin_index):
             gtin  = row[idx_id].strip().strip('"')   if idx_id    < len(row) else ''
 
             if avail == 'in_stock' and store and store != 'NONE':
-                # Résoudre le GTIN en offer_id
                 offer_id = gtin_index.get(gtin, '')
                 if not offer_id:
                     no_match += 1
                     continue
-                new_row = list(row)
+                new_row        = list(row)
                 new_row[idx_id] = offer_id
                 filtered.append(new_row)
                 kept += 1
+
+    # Traiter le dernier fragment
+    if buffer.strip() and headers:
+        row = next(csv.reader([buffer.strip()], delimiter=';'))
+        if len(row) == len(headers):
+            avail = row[idx_avail].strip().strip('"')
+            store = row[idx_store].strip().strip('"')
+            gtin  = row[idx_id].strip().strip('"')
+            if avail == 'in_stock' and store and store != 'NONE':
+                offer_id = gtin_index.get(gtin, '')
+                if offer_id:
+                    new_row = list(row)
+                    new_row[idx_id] = offer_id
+                    filtered.append(new_row)
+                    kept += 1
 
     log.info(f"Lignes lues : {total} | Gardées : {kept} | Sans match GTIN : {no_match}")
     return filtered
@@ -185,9 +197,9 @@ def write_to_sheet(service, rows):
 
 
 def main():
-    service     = get_sheets_service()
-    gtin_index  = build_gtin_index()
-    filtered    = stream_and_filter(gtin_index)
+    service    = get_sheets_service()
+    gtin_index = build_gtin_index()
+    filtered   = stream_and_filter(gtin_index)
 
     if len(filtered) <= 1:
         log.warning("Aucun produit valide trouvé.")
