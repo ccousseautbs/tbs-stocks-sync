@@ -68,6 +68,8 @@ def build_gtin_index():
 
             if headers is None:
                 headers = row
+                log.info(f"Nb colonnes : {len(headers)}")
+                log.info(f"10 premières colonnes : {headers[:10]}")
                 # Chercher les colonnes offer_id et gtin
                 try:
                     idx_offer = headers.index('IDENTIFIER')
