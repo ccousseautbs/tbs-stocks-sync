@@ -1,8 +1,10 @@
 """
 STOCKS SYNC TBS — Script Python
-1. Lit le flux Lengow pour construire un index GTIN → offer_id
-2. Lit le flux stocks en streaming, filtre in_stock + store_code valide
-3. Pousse l'inventaire local via Merchant API (Content API v2.1)
+Utilise la Merchant API (pas la Content API dépréciée)
+1. Lit le flux Lengow → index GTIN → offer_id
+2. Lit le flux stocks en streaming → filtre in_stock + store_code valide
+3. Pousse l'inventaire local via Merchant Inventories API v1
+4. Écrit le résultat dans Google Sheets
 """
 
 import os
@@ -12,6 +14,7 @@ import logging
 import requests
 import time
 from google.oauth2 import service_account
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
@@ -27,10 +30,12 @@ SCOPES      = [
     'https://www.googleapis.com/auth/content',
     'https://www.googleapis.com/auth/spreadsheets',
 ]
+# Merchant API base URL
+MERCHANT_API_BASE = 'https://merchantapi.googleapis.com/inventories/v1'
 # ────────────────────────────────────────────────────────────
 
 
-def get_services():
+def get_credentials():
     """Auth via la clé de service stockée dans GCP_KEY."""
     key_json = os.environ.get('GCP_KEY')
     if not key_json:
@@ -39,9 +44,12 @@ def get_services():
     creds = service_account.Credentials.from_service_account_info(
         key_data, scopes=SCOPES
     )
-    merchant = build('content', 'v2.1', credentials=creds)
-    sheets   = build('sheets', 'v4',   credentials=creds)
-    return merchant, sheets
+    creds.refresh(Request())
+    return creds
+
+
+def get_sheets_service(creds):
+    return build('sheets', 'v4', credentials=creds)
 
 
 def build_gtin_index():
@@ -90,7 +98,6 @@ def build_gtin_index():
             if gtin and offer_id:
                 gtin_index[gtin] = offer_id.lower()
 
-    # Dernier fragment
     if buffer.strip() and headers and idx_gtin is not None:
         row = next(csv.reader([buffer.strip()], delimiter=','))
         if len(row) > max(idx_offer, idx_gtin):
@@ -109,17 +116,17 @@ def stream_and_filter(gtin_index):
     response = requests.get(STOCKS_URL, stream=True, timeout=300)
     response.raise_for_status()
 
-    products  = []
-    headers   = None
-    idx_avail = None
-    idx_store = None
-    idx_id    = None
-    idx_price = None
-    idx_sale  = None
+    products      = []
+    headers       = None
+    idx_avail     = None
+    idx_store     = None
+    idx_id        = None
+    idx_price     = None
+    idx_sale      = None
     idx_sale_date = None
-    idx_qty   = None
-    total     = 0
-    no_match  = 0
+    idx_qty       = None
+    total         = 0
+    no_match      = 0
 
     buffer = ''
     for chunk in response.iter_content(chunk_size=1024 * 1024, decode_unicode=True):
@@ -140,9 +147,9 @@ def stream_and_filter(gtin_index):
                 idx_store     = headers.index('store_code')
                 idx_id        = headers.index('id')
                 idx_price     = headers.index('price')
-                idx_sale      = headers.index('sale_price')       if 'sale_price' in headers else None
+                idx_sale      = headers.index('sale_price') if 'sale_price' in headers else None
                 idx_sale_date = headers.index('sale_price_effective_date') if 'sale_price_effective_date' in headers else None
-                idx_qty       = headers.index('quantity')         if 'quantity' in headers else None
+                idx_qty       = headers.index('quantity') if 'quantity' in headers else None
                 log.info(f"Colonnes stocks : {headers}")
                 continue
 
@@ -157,33 +164,34 @@ def stream_and_filter(gtin_index):
                     no_match += 1
                     continue
 
-                # Parser le prix : "37.5 EUR" → amount + currency
-                price_raw  = row[idx_price].strip().strip('"') if idx_price < len(row) else ''
-                price_parts = price_raw.split(' ')
+                price_raw      = row[idx_price].strip().strip('"') if idx_price < len(row) else ''
+                price_parts    = price_raw.split(' ')
                 price_amount   = price_parts[0] if price_parts else ''
                 price_currency = price_parts[1] if len(price_parts) > 1 else 'EUR'
 
-                # Sale price
                 sale_amount   = ''
                 sale_currency = 'EUR'
                 sale_date     = ''
-                if idx_sale and idx_sale < len(row):
+                if idx_sale is not None and idx_sale < len(row):
                     sale_raw = row[idx_sale].strip().strip('"')
                     if sale_raw:
                         sale_parts    = sale_raw.split(' ')
                         sale_amount   = sale_parts[0]
                         sale_currency = sale_parts[1] if len(sale_parts) > 1 else 'EUR'
-                if idx_sale_date and idx_sale_date < len(row):
+                if idx_sale_date is not None and idx_sale_date < len(row):
                     sale_date = row[idx_sale_date].strip().strip('"')
 
-                qty = ''
-                if idx_qty and idx_qty < len(row):
-                    qty = row[idx_qty].strip().strip('"')
+                qty = 0
+                if idx_qty is not None and idx_qty < len(row):
+                    try:
+                        qty = int(row[idx_qty].strip().strip('"'))
+                    except ValueError:
+                        qty = 0
 
                 products.append({
-                    'offer_id':     offer_id,
-                    'store_code':   store,
-                    'availability': avail,
+                    'offer_id':       offer_id,
+                    'store_code':     store,
+                    'availability':   avail,
                     'price_amount':   price_amount,
                     'price_currency': price_currency,
                     'sale_amount':    sale_amount,
@@ -196,85 +204,89 @@ def stream_and_filter(gtin_index):
     return products
 
 
-def build_product_id(offer_id):
+def build_product_name(offer_id):
     """
-    Construit le product_id GMC depuis l'offer_id.
-    Format GMC : online:fr:FR:{offer_id}
+    Construit le nom de produit Merchant API.
+    Format : accounts/{merchantId}/products/online~fr~FR~{offer_id}
+    Les ~ remplacent les : de l'ancien format Content API.
     """
-    return f"online:fr:FR:{offer_id}"
+    return f"accounts/{MERCHANT_ID}/products/online~fr~FR~{offer_id}"
 
 
-def push_local_inventory(merchant, products):
-    """Pousse l'inventaire local via Content API v2.1 — batch de 100."""
+def push_local_inventory(creds, products):
+    """Pousse l'inventaire local via Merchant Inventories API v1."""
     log.info(f"Push inventaire local pour {len(products)} produits...")
 
-    success  = 0
-    errors   = []
-    batch_size = 100
+    token   = creds.token
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Content-Type':  'application/json',
+    }
 
-    for i in range(0, len(products), batch_size):
-        batch   = products[i:i + batch_size]
-        entries = []
+    success = 0
+    errors  = []
 
-        for j, p in enumerate(batch):
-            product_id = build_product_id(p['offer_id'])
+    for i, p in enumerate(products):
+        product_name = build_product_name(p['offer_id'])
+        url = f"{MERCHANT_API_BASE}/{product_name}/localInventories:insert"
 
-            inventory = {
-                'storeCode':    p['store_code'],
-                'availability': p['availability'],
-            }
+        body = {
+            'storeCode':    p['store_code'],
+            'availability': p['availability'],
+            'quantity':     p['quantity'],
+        }
 
-            if p['price_amount']:
-                inventory['price'] = {
-                    'value':    p['price_amount'],
-                    'currency': p['price_currency'],
+        if p['price_amount']:
+            # Merchant API attend les prix en micros
+            try:
+                amount_micros = int(float(p['price_amount']) * 1_000_000)
+                body['price'] = {
+                    'amountMicros': amount_micros,
+                    'currencyCode': p['price_currency'],
                 }
+            except ValueError:
+                pass
 
-            if p['sale_amount']:
-                inventory['salePrice'] = {
-                    'value':    p['sale_amount'],
-                    'currency': p['sale_currency'],
+        if p['sale_amount']:
+            try:
+                sale_micros = int(float(p['sale_amount']) * 1_000_000)
+                body['salePrice'] = {
+                    'amountMicros': sale_micros,
+                    'currencyCode': p['sale_currency'],
                 }
+            except ValueError:
+                pass
 
-            if p['sale_date']:
-                inventory['salePriceEffectiveDate'] = p['sale_date']
-
-            if p['quantity']:
-                try:
-                    inventory['quantity'] = int(p['quantity'])
-                except ValueError:
-                    pass
-
-            entries.append({
-                'batchId':   j,
-                'merchantId': MERCHANT_ID,
-                'method':    'insert',
-                'productId': product_id,
-                'localInventory': inventory,
-            })
+        if p['sale_date']:
+            # Format Merchant API : startTime/endTime séparés
+            # Input : "2026-06-24T00:00+02:00/2026-07-21T23:59+02:00"
+            date_parts = p['sale_date'].split('/')
+            if len(date_parts) == 2:
+                body['salePriceEffectiveDate'] = {
+                    'startTime': date_parts[0],
+                    'endTime':   date_parts[1],
+                }
 
         try:
-            response = merchant.localinventory().custombatch(
-                body={'entries': entries}
-            ).execute()
-
-            for entry in response.get('entries', []):
-                if entry.get('errors'):
-                    for err in entry['errors'].get('errors', []):
-                        errors.append({
-                            'product': entries[entry['batchId']]['productId'],
-                            'error':   err.get('message', ''),
-                        })
-                else:
-                    success += 1
-
+            resp = requests.post(url, headers=headers, json=body, timeout=30)
+            if resp.status_code == 200:
+                success += 1
+            else:
+                errors.append({
+                    'product': p['offer_id'],
+                    'status':  resp.status_code,
+                    'error':   resp.text[:200],
+                })
         except Exception as e:
-            log.error(f"Batch {i // batch_size + 1} erreur : {e}")
-            errors.append({'product': 'batch', 'error': str(e)})
+            errors.append({'product': p['offer_id'], 'error': str(e)})
 
-        log.info(f"  Batch {i // batch_size + 1}/{(len(products) + batch_size - 1) // batch_size} — {success} OK / {len(errors)} erreurs")
-        time.sleep(0.5)  # éviter rate limiting
+        # Log progression tous les 50 produits
+        if (i + 1) % 50 == 0:
+            log.info(f"  Progression : {i + 1}/{len(products)} — {success} OK / {len(errors)} erreurs")
 
+        time.sleep(0.1)  # 10 req/s max
+
+    log.info(f"Push terminé — {success} OK / {len(errors)} erreurs")
     return success, errors
 
 
@@ -282,8 +294,8 @@ def write_to_sheet(sheets, products):
     """Écrit le résultat dans le Sheet pour visibilité."""
     log.info(f"Écriture dans Sheet — onglet {TAB_NAME}...")
 
-    headers = ['id', 'store_code', 'availability', 'price', 'sale_price', 'quantity']
-    rows    = [headers]
+    headers_row = ['id', 'store_code', 'availability', 'price', 'sale_price', 'quantity']
+    rows = [headers_row]
     for p in products:
         rows.append([
             p['offer_id'],
@@ -310,26 +322,26 @@ def write_to_sheet(sheets, products):
 
 
 def main():
-    merchant, sheets = get_services()
-    gtin_index       = build_gtin_index()
-    products         = stream_and_filter(gtin_index)
+    creds    = get_credentials()
+    sheets   = get_sheets_service(creds)
+
+    gtin_index = build_gtin_index()
+    products   = stream_and_filter(gtin_index)
 
     if not products:
         log.warning("Aucun produit valide trouvé.")
         return
 
-    # Écrire dans le Sheet pour visibilité
     write_to_sheet(sheets, products)
 
-    # Pousser via Merchant API
-    success, errors = push_local_inventory(merchant, products)
+    success, errors = push_local_inventory(creds, products)
 
-    log.info(f"\n=== RÉSULTAT ===")
+    log.info(f"\n=== RÉSULTAT FINAL ===")
     log.info(f"✅ Succès  : {success}")
     log.info(f"❌ Erreurs : {len(errors)}")
     if errors:
         for e in errors[:10]:
-            log.error(f"  {e['product']} : {e['error']}")
+            log.error(f"  {e.get('product')} [{e.get('status','')}] : {e.get('error','')[:150]}")
 
 
 if __name__ == '__main__':
