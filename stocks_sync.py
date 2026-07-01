@@ -64,20 +64,20 @@ def build_gtin_index():
                 continue
 
             # Détecter le séparateur : | pour Lengow
-            row = next(csv.reader([line], delimiter=','))
+            row = next(csv.reader([line], delimiter='|'))
 
             if headers is None:
                 headers = [h.strip().strip("'\"") for h in row]
-                headers = row
                 # Chercher les colonnes offer_id et gtin
                 try:
-                    idx_offer = headers.index('identifier')
+                    idx_offer = headers.index('IDENTIFIER')
                 except ValueError:
                     idx_offer = 0
                 try:
                     idx_gtin = headers.index('EAN')
                 except ValueError:
                     idx_gtin = None
+                log.info(f"Lengow — offer_id col: {idx_offer} (IDENTIFIER), gtin col: {idx_gtin} (EAN)")
                 continue
 
             if idx_gtin is None:
@@ -97,7 +97,7 @@ def build_gtin_index():
             offer_id = row[idx_offer].strip()
             gtin     = row[idx_gtin].strip().strip('"') if idx_gtin else ''
             if gtin and offer_id:
-                gtin_index[gtin] = offer_id
+                gtin_index[gtin] = offer_id.lower()
 
     log.info(f"Index GTIN → offer_id : {len(gtin_index)} entrées")
     return gtin_index
@@ -136,9 +136,7 @@ def stream_and_filter(gtin_index):
                 idx_avail = headers.index('availability')
                 idx_store = headers.index('store_code')
                 idx_id    = headers.index('id')
-                # Remplacer 'id' par 'itemid' + ajouter 'gtin'
-                new_headers = ['id' if h == 'id' else h for h in headers]
-                new_headers.append('gtin')
+                new_headers = list(headers)
                 filtered.append(new_headers)
                 log.info(f"Colonnes stocks : {new_headers}")
                 continue
@@ -154,10 +152,8 @@ def stream_and_filter(gtin_index):
                 if not offer_id:
                     no_match += 1
                     continue
-                # Construire la ligne avec itemid = offer_id + gtin en dernière colonne
-                new_row      = list(row)
-                new_row[idx_id] = offer_id  # remplacer GTIN par offer_id
-                new_row.append(gtin)         # ajouter GTIN en dernière colonne
+                new_row = list(row)
+                new_row[idx_id] = offer_id
                 filtered.append(new_row)
                 kept += 1
 
