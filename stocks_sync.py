@@ -1,7 +1,9 @@
 """
 STOCKS SYNC TBS — Script Python
-Lit le flux stocks en streaming, filtre in_stock + store_code valide,
-écrit dans Google Sheets.
+1. Lit le flux Lengow pour construire un index GTIN → offer_id
+2. Lit le flux stocks en streaming, filtre in_stock + store_code valide
+3. Remplace le GTIN par l'offer_id dans la colonne id
+4. Écrit dans Google Sheets
 """
 
 import os
@@ -17,6 +19,7 @@ log = logging.getLogger(__name__)
 
 # ─── CONFIG ─────────────────────────────────────────────────
 STOCKS_URL = 'https://tbs.fr/Storage/Lengow/stocks.csv'
+LENGOW_URL = 'https://tbs.fr/Storage/Lengow/Lengow.csv'
 SHEET_ID   = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
 TAB_NAME   = 'Stocks'
 SCOPES     = ['https://www.googleapis.com/auth/spreadsheets']
@@ -24,7 +27,6 @@ SCOPES     = ['https://www.googleapis.com/auth/spreadsheets']
 
 
 def get_sheets_service():
-    """Auth via la clé de service stockée dans la variable d'env GCP_KEY."""
     key_json = os.environ.get('GCP_KEY')
     if not key_json:
         raise ValueError("Variable d'environnement GCP_KEY manquante.")
@@ -35,25 +37,92 @@ def get_sheets_service():
     return build('sheets', 'v4', credentials=creds)
 
 
-def stream_and_filter():
-    """Lit le CSV en streaming et filtre les lignes utiles."""
-    log.info(f"Téléchargement en streaming : {STOCKS_URL}")
-    response = requests.get(STOCKS_URL, stream=True, timeout=300)
+def build_gtin_index():
+    """
+    Lit le flux Lengow et construit un index gtin → offer_id.
+    Le flux Lengow est séparé par | d'après les analyses précédentes.
+    """
+    log.info(f"Lecture flux Lengow : {LENGOW_URL}")
+    response = requests.get(LENGOW_URL, stream=True, timeout=300)
     response.raise_for_status()
 
-    filtered = []
-    headers  = None
-    idx_avail = None
-    idx_store = None
-    total = 0
-    kept  = 0
+    gtin_index = {}
+    headers    = None
+    idx_offer  = None
+    idx_gtin   = None
+    count      = 0
 
-    # Décoder ligne par ligne sans tout charger en mémoire
     buffer = ''
     for chunk in response.iter_content(chunk_size=1024 * 1024, decode_unicode=True):
         buffer += chunk
         lines   = buffer.split('\n')
-        buffer  = lines[-1]  # garder le fragment incomplet pour le prochain chunk
+        buffer  = lines[-1]
+
+        for line in lines[:-1]:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Détecter le séparateur : | pour Lengow
+            row = next(csv.reader([line], delimiter='|'))
+
+            if headers is None:
+                headers = row
+                # Chercher les colonnes offer_id et gtin
+                try:
+                    idx_offer = headers.index('offer_id')
+                except ValueError:
+                    idx_offer = 0  # première colonne par défaut
+                # GTIN peut s'appeler gtins_01 dans le flux Lengow
+                gtin_cols = [i for i, h in enumerate(headers)
+                             if 'gtin' in h.lower()]
+                idx_gtin  = gtin_cols[0] if gtin_cols else None
+                log.info(f"Lengow — offer_id col: {idx_offer}, gtin col: {idx_gtin}")
+                continue
+
+            if idx_gtin is None:
+                continue
+
+            offer_id = row[idx_offer].strip() if idx_offer < len(row) else ''
+            gtin     = row[idx_gtin].strip().strip('"') if idx_gtin < len(row) else ''
+
+            if gtin and offer_id:
+                gtin_index[gtin] = offer_id
+                count += 1
+
+    # Traiter le dernier fragment
+    if buffer.strip() and headers:
+        row = next(csv.reader([buffer.strip()], delimiter='|'))
+        if len(row) > max(idx_offer, idx_gtin or 0):
+            offer_id = row[idx_offer].strip()
+            gtin     = row[idx_gtin].strip().strip('"') if idx_gtin else ''
+            if gtin and offer_id:
+                gtin_index[gtin] = offer_id
+
+    log.info(f"Index GTIN → offer_id : {len(gtin_index)} entrées")
+    return gtin_index
+
+
+def stream_and_filter(gtin_index):
+    """Lit le CSV stocks en streaming et filtre les lignes utiles."""
+    log.info(f"Téléchargement stocks en streaming : {STOCKS_URL}")
+    response = requests.get(STOCKS_URL, stream=True, timeout=300)
+    response.raise_for_status()
+
+    filtered  = []
+    headers   = None
+    idx_avail = None
+    idx_store = None
+    idx_id    = None
+    total     = 0
+    kept      = 0
+    no_match  = 0
+
+    buffer = ''
+    for chunk in response.iter_content(chunk_size=1024 * 1024, decode_unicode=True):
+        buffer += chunk
+        lines   = buffer.split('\n')
+        buffer  = lines[-1]
 
         for line in lines[:-1]:
             line = line.strip()
@@ -64,48 +133,46 @@ def stream_and_filter():
 
             if headers is None:
                 headers   = row
-                # Renommer 'id' en 'gtin' pour GMC Local Inventory
-                headers = ['gtin' if h == 'id' else h for h in headers]
                 idx_avail = headers.index('availability')
                 idx_store = headers.index('store_code')
-                filtered.append(headers)
-                log.info(f"Colonnes : {headers}")
+                idx_id    = headers.index('id')
+                # Remplacer 'id' par 'itemid' + ajouter 'gtin'
+                new_headers = ['itemid' if h == 'id' else h for h in headers]
+                new_headers.append('gtin')
+                filtered.append(new_headers)
+                log.info(f"Colonnes stocks : {new_headers}")
                 continue
 
             total += 1
-
             avail = row[idx_avail].strip().strip('"') if idx_avail < len(row) else ''
             store = row[idx_store].strip().strip('"') if idx_store < len(row) else ''
+            gtin  = row[idx_id].strip().strip('"')   if idx_id    < len(row) else ''
 
             if avail == 'in_stock' and store and store != 'NONE':
-                filtered.append(row)
+                # Résoudre le GTIN en offer_id
+                offer_id = gtin_index.get(gtin, '')
+                if not offer_id:
+                    no_match += 1
+                    continue
+                # Construire la ligne avec itemid = offer_id + gtin en dernière colonne
+                new_row      = list(row)
+                new_row[idx_id] = offer_id  # remplacer GTIN par offer_id
+                new_row.append(gtin)         # ajouter GTIN en dernière colonne
+                filtered.append(new_row)
                 kept += 1
 
-    # Traiter le dernier fragment
-    if buffer.strip():
-        row = next(csv.reader([buffer.strip()], delimiter=';'))
-        if headers and len(row) == len(headers):
-            avail = row[idx_avail].strip().strip('"')
-            store = row[idx_store].strip().strip('"')
-            if avail == 'in_stock' and store and store != 'NONE':
-                filtered.append(row)
-                kept += 1
-
-    log.info(f"Lignes lues : {total} | Gardées : {kept}")
+    log.info(f"Lignes lues : {total} | Gardées : {kept} | Sans match GTIN : {no_match}")
     return filtered
 
 
 def write_to_sheet(service, rows):
-    """Écrit les données dans le Sheet par batch."""
-    log.info(f"Écriture dans Sheet {SHEET_ID} — onglet {TAB_NAME}...")
+    log.info(f"Écriture dans Sheet — onglet {TAB_NAME}...")
 
-    # Vider l'onglet
     service.spreadsheets().values().clear(
         spreadsheetId=SHEET_ID,
         range=TAB_NAME,
     ).execute()
 
-    # Écrire par batch de 10 000 lignes
     batch_size = 10000
     for i in range(0, len(rows), batch_size):
         batch      = rows[i:i + batch_size]
@@ -116,17 +183,18 @@ def write_to_sheet(service, rows):
             valueInputOption='RAW',
             body={'values': batch},
         ).execute()
-        log.info(f"  Batch {i // batch_size + 1} : {len(batch)} lignes écrites")
+        log.info(f"  Batch {i // batch_size + 1} : {len(batch)} lignes")
 
     log.info(f"✅ Sheet mis à jour : {len(rows) - 1} produits")
 
 
 def main():
-    service  = get_sheets_service()
-    filtered = stream_and_filter()
+    service     = get_sheets_service()
+    gtin_index  = build_gtin_index()
+    filtered    = stream_and_filter(gtin_index)
 
     if len(filtered) <= 1:
-        log.warning("Aucun produit in_stock avec store_code valide trouvé.")
+        log.warning("Aucun produit valide trouvé.")
         return
 
     write_to_sheet(service, filtered)
