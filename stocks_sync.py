@@ -1,10 +1,11 @@
 """
 STOCKS SYNC TBS — Script Python
 Utilise la Merchant API (pas la Content API dépréciée)
-1. Lit le flux Lengow → index GTIN → offer_id
-2. Lit le flux stocks en streaming → filtre in_stock + store_code valide
-3. Pousse l'inventaire local via Merchant Inventories API v1
-4. Écrit le résultat dans Google Sheets
+1. Enregistre le projet GCP auprès de la Merchant API
+2. Lit le flux Lengow → index GTIN → offer_id
+3. Lit le flux stocks en streaming → filtre in_stock + store_code valide
+4. Pousse l'inventaire local via Merchant Inventories API v1
+5. Écrit le résultat dans Google Sheets
 """
 
 import os
@@ -21,16 +22,18 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 log = logging.getLogger(__name__)
 
 # ─── CONFIG ─────────────────────────────────────────────────
-STOCKS_URL  = 'https://tbs.fr/Storage/Lengow/stocks.csv'
-LENGOW_URL  = 'https://tbs.fr/Storage/Lengow/Lengow.csv'
-MERCHANT_ID = '110798793'
-SHEET_ID    = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
-TAB_NAME    = 'Stocks'
-SCOPES      = [
+STOCKS_URL      = 'https://tbs.fr/Storage/Lengow/stocks.csv'
+LENGOW_URL      = 'https://tbs.fr/Storage/Lengow/Lengow.csv'
+MERCHANT_ID     = '110798793'
+DEVELOPER_EMAIL = 'ccousseau@tbs.fr'  # ← ton email GMC/Google
+SHEET_ID        = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
+TAB_NAME        = 'Stocks'
+SCOPES          = [
     'https://www.googleapis.com/auth/content',
     'https://www.googleapis.com/auth/spreadsheets',
 ]
 MERCHANT_API_BASE = 'https://merchantapi.googleapis.com/inventories/v1'
+MERCHANT_ACCOUNTS_BASE = 'https://merchantapi.googleapis.com/accounts/v1'
 # ────────────────────────────────────────────────────────────
 
 
@@ -48,6 +51,25 @@ def get_credentials():
 
 def get_sheets_service(creds):
     return build('sheets', 'v4', credentials=creds)
+
+
+def register_gcp_project(creds):
+    """Enregistre le projet GCP auprès de la Merchant API (à faire une fois)."""
+    token = creds.token
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Content-Type':  'application/json',
+    }
+    url  = f"{MERCHANT_ACCOUNTS_BASE}/accounts/{MERCHANT_ID}/developerRegistration:registerGcp"
+    body = {'developerEmail': DEVELOPER_EMAIL}
+
+    resp = requests.post(url, headers=headers, json=body, timeout=30)
+    if resp.status_code == 200:
+        log.info("✅ Projet GCP enregistré avec succès.")
+    elif resp.status_code == 409:
+        log.info("✅ Projet GCP déjà enregistré.")
+    else:
+        log.warning(f"⚠️ Enregistrement GCP : {resp.status_code} — {resp.text[:300]}")
 
 
 def build_gtin_index():
@@ -220,7 +242,6 @@ def push_local_inventory(creds, products):
         product_name = build_product_name(p['offer_id'])
         url = f"{MERCHANT_API_BASE}/{product_name}/localInventories:insert"
 
-        # Construire localInventoryAttributes
         local_attrs = {
             'availability': p['availability'].upper().replace(' ', '_'),
             'quantity':     p['quantity'],
@@ -312,6 +333,9 @@ def write_to_sheet(sheets, products):
 def main():
     creds  = get_credentials()
     sheets = get_sheets_service(creds)
+
+    # Enregistrer le projet GCP auprès de la Merchant API
+    register_gcp_project(creds)
 
     gtin_index = build_gtin_index()
     products   = stream_and_filter(gtin_index)
