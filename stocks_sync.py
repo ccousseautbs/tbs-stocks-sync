@@ -64,19 +64,17 @@ def build_gtin_index():
                 continue
 
             # Détecter le séparateur : | pour Lengow
-            row = next(csv.reader([line], delimiter='|'))
+            row = next(csv.reader([line], delimiter=','))
 
             if headers is None:
                 headers = row
-                log.info(f"Nb colonnes : {len(headers)}")
-                log.info(f"10 premières colonnes : {headers[:10]}")
                 # Chercher les colonnes offer_id et gtin
                 try:
-                    idx_offer = headers.index('IDENTIFIER')
+                    idx_offer = headers.index('identifier')
                 except ValueError:
                     idx_offer = 0
                 try:
-                    idx_gtin = headers.index('EAN')
+                    idx_gtin = headers.index('ean')
                 except ValueError:
                     idx_gtin = None
                 log.info(f"Lengow — offer_id col: {idx_offer} (IDENTIFIER), gtin col: {idx_gtin} (EAN)")
