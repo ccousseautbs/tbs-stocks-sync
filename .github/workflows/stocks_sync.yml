@@ -1,11 +1,12 @@
 name: Stocks Sync TBS
 
 on:
-  # Trigger quotidien à 3h du matin (heure Paris = 1h UTC)
   schedule:
-    - cron: '0 1 * * *'
-  # Trigger manuel depuis l'interface GitHub
+    - cron: '0 1 * * *'  # 3h du matin heure Paris (1h UTC)
   workflow_dispatch:
+
+permissions:
+  contents: write  # nécessaire pour publier sur GitHub Pages
 
 jobs:
   sync:
@@ -30,3 +31,11 @@ jobs:
         env:
           GCP_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
         run: python stocks_sync.py
+
+      - name: Publish flux local to GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
