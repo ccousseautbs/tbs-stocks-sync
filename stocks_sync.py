@@ -223,7 +223,7 @@ def stream_and_filter(gtin_index):
 
 
 def build_product_name(offer_id):
-    return f"accounts/{MERCHANT_ID}/products/local~fr~FR~{offer_id}"
+    return f"accounts/{MERCHANT_ID}/products/online~fr~FR~{offer_id}"
 
 
 def push_local_inventory(creds, products):
