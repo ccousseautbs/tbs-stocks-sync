@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 STOCKS_URL        = 'https://tbs.fr/Storage/Lengow/stocks.csv'
 LENGOW_URL        = 'https://feeds.lengow.io/3/jzdj298'
 MERCHANT_ID       = '110798793'
-DEVELOPER_EMAIL   = 'ton@email.com'
+DEVELOPER_EMAIL   = 'ccousseau@tbs.fr'
 SHEET_ID          = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
 TAB_NAME          = 'Stocks'
 LOCAL_FLUX_PATH   = 'docs/flux_local_gmc.csv'
@@ -219,7 +219,10 @@ def generate_inventory_file(products):
 
         for p in products:
             price_str = f"{p['price_amount']} {p['price_currency']}" if p['price_amount'] else ''
-            sale_str  = f"{p['sale_amount']} {p['sale_currency']}" if p['sale_amount'] else ''
+            # Vider sale_price si identique au price (évite le prix barré incorrect)
+            sale_same = (p['sale_amount'] and p['price_amount'] and
+                        round(float(p['sale_amount']), 2) == round(float(p['price_amount']), 2))
+            sale_str  = '' if sale_same else (f"{p['sale_amount']} {p['sale_currency']}" if p['sale_amount'] else '')
             writer.writerow([
                 p['store_code'],
                 p['offer_id'],
