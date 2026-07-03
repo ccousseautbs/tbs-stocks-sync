@@ -46,22 +46,20 @@ LOCAL_FLUX_HEADERS = [
 ]
 
 LENGOW_COL_MAP = {
-    'offer_id':                               'id',
-    'product_attributes.title':               'title',
-    'product_attributes.price.amount_micros': 'price',
-    'product_attributes.price.currency_code': 'price_currency',
-    'product_attributes.availability':        'availability',
-    'product_attributes.image_link':          'image_link',
-    'product_attributes.link':                'link',
-    'product_attributes.gtins_01':            'gtin',
-    'product_attributes.brand':               'brand',
-    'product_attributes.condition':           'condition',
-    'product_attributes.mpn':                 'mpn',
-    'product_attributes.description':         'description',
-    'product_attributes.color':               'color',
-    'product_attributes.size':                'size',
-    'product_attributes.gender':              'gender',
-    'product_attributes.item_group_id':       'item_group_id',
+    'identifier':          'id',
+    'Titre du produit':    'title',
+    'price':               'price',
+    'stock':               'availability',
+    'image_url':           'image_link',
+    'product_url':         'link',
+    'EAN':                 'gtin',
+    'brand':               'brand',
+    'MPN':                 'mpn',
+    'description':         'description',
+    'Couleur de filtre':   'color',
+    'axis_size':           'size',
+    'Genre':               'gender',
+    'parent':              'item_group_id',
 }
 
 
@@ -135,8 +133,6 @@ def build_gtin_index():
                 log.info(f"Lengow — colonnes : {len(headers)} | offer_id: {idx_offer} | gtin: {idx_gtin}")
                 continue
 
-            log.info(f"Toutes les colonnes Lengow : {headers}")
-
             if idx_gtin is None:
                 continue
 
@@ -169,29 +165,35 @@ def generate_local_flux(lengow_rows, col_indices):
         writer.writerow(LOCAL_FLUX_HEADERS)
 
         for row in lengow_rows:
-            price_raw = row[col_indices['product_attributes.price.amount_micros']].strip() if 'product_attributes.price.amount_micros' in col_indices else ''
-            currency  = row[col_indices['product_attributes.price.currency_code']].strip() or 'EUR' if 'product_attributes.price.currency_code' in col_indices else 'EUR'
-            price_str = f"{price_raw} {currency}" if price_raw else ''
-
             def get(col):
                 return row[col_indices[col]].strip() if col in col_indices else ''
 
+            price_raw = get('price')
+            price_str = f"{price_raw} EUR" if price_raw else ''
+
+            # Convertir stock → availability GMC
+            stock_val = get('stock')
+            try:
+                avail = 'in_stock' if int(stock_val) > 0 else 'out_of_stock'
+            except (ValueError, TypeError):
+                avail = 'in_stock' if stock_val and stock_val != '0' else 'out_of_stock'
+
             writer.writerow([
-                get('offer_id').lower(),
-                get('product_attributes.title'),
+                get('identifier').lower(),
+                get('Titre du produit'),
                 price_str,
-                get('product_attributes.availability'),
-                get('product_attributes.image_link'),
-                get('product_attributes.link'),
-                get('product_attributes.gtins_01'),
-                get('product_attributes.brand'),
-                get('product_attributes.condition') or 'new',
-                get('product_attributes.mpn'),
-                get('product_attributes.description'),
-                get('product_attributes.color'),
-                get('product_attributes.size'),
-                get('product_attributes.gender'),
-                get('product_attributes.item_group_id'),
+                avail,
+                get('image_url'),
+                get('product_url'),
+                get('EAN'),
+                get('brand'),
+                'new',
+                get('MPN'),
+                get('description'),
+                get('Couleur de filtre'),
+                get('axis_size'),
+                get('Genre'),
+                get('parent'),
             ])
 
     log.info(f"✅ Flux local généré : {LOCAL_FLUX_PATH}")
