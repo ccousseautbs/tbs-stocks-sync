@@ -6,7 +6,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # nécessaire pour publier sur GitHub Pages
+  contents: write
+  pages: write
+  id-token: write
 
 jobs:
   sync:
