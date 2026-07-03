@@ -318,6 +318,11 @@ def push_local_inventory(creds, products):
     errors  = []
 
     for i, p in enumerate(products):
+        # Rafraîchir le token toutes les 100 requêtes
+        if i % 100 == 0:
+            creds.refresh(Request())
+            token = creds.token
+            headers['Authorization'] = f'Bearer {token}'
         product_name = build_product_name(p['offer_id'])
         url = f"{MERCHANT_API_BASE}/{product_name}/localInventories:insert"
 
