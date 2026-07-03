@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 # ─── CONFIG ─────────────────────────────────────────────────
 STOCKS_URL        = 'https://tbs.fr/Storage/Lengow/stocks.csv'
-LENGOW_URL        = 'https://tbs.fr/Storage/Lengow/Lengow.csv'
+LENGOW_URL        = 'https://feeds.lengow.io/3/jzdj298'
 MERCHANT_ID       = '110798793'
 DEVELOPER_EMAIL   = 'ton@email.com'
 SHEET_ID          = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
@@ -46,20 +46,22 @@ LOCAL_FLUX_HEADERS = [
 ]
 
 LENGOW_COL_MAP = {
-    'identifier':          'id',
-    'Titre du produit':    'title',
-    'price':               'price',
-    'stock':               'availability',
-    'image_url':           'image_link',
-    'product_url':         'link',
-    'EAN':                 'gtin',
-    'brand':               'brand',
-    'MPN':                 'mpn',
-    'description':         'description',
-    'Couleur de filtre':   'color',
-    'axis_size':           'size',
-    'Genre':               'gender',
-    'parent':              'item_group_id',
+    'offer_id':                               'id',
+    'product_attributes.title':               'title',
+    'product_attributes.price.amount_micros': 'price',
+    'product_attributes.price.currency_code': 'price_currency',
+    'product_attributes.availability':        'availability',
+    'product_attributes.image_link':          'image_link',
+    'product_attributes.link':                'link',
+    'product_attributes.gtins_01':            'gtin',
+    'product_attributes.brand':               'brand',
+    'product_attributes.condition':           'condition',
+    'product_attributes.mpn':                 'mpn',
+    'product_attributes.description':         'description',
+    'product_attributes.color':               'color',
+    'product_attributes.size':                'size',
+    'product_attributes.gender':              'gender',
+    'product_attributes.item_group_id':       'item_group_id',
 }
 
 
@@ -115,16 +117,16 @@ def build_gtin_index():
             if not line:
                 continue
 
-            row = next(csv.reader([line], delimiter=','))
+            row = next(csv.reader([line], delimiter='|'))
 
             if headers is None:
                 headers = [h.strip().strip("'\"") for h in row]
                 try:
-                    idx_offer = headers.index('identifier')
+                    idx_offer = headers.index('offer_id')
                 except ValueError:
                     idx_offer = 0
                 try:
-                    idx_gtin = headers.index('EAN')
+                    idx_gtin = headers.index('product_attributes.gtins_01')
                 except ValueError:
                     idx_gtin = None
                 for lengow_col in LENGOW_COL_MAP:
@@ -166,10 +168,7 @@ def generate_local_flux(lengow_rows, col_indices):
 
         for row in lengow_rows:
             def get(col):
-                idx = col_indices.get(col)
-                if idx is None or idx >= len(row):
-                    return ''
-                return row[idx].strip()
+                return row[col_indices[col]].strip() if col in col_indices else ''
 
             price_raw = get('price')
             price_str = f"{price_raw} EUR" if price_raw else ''
