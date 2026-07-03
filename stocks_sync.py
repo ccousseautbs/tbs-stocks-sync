@@ -377,6 +377,8 @@ def push_local_inventory(creds, products):
 
         if (i + 1) % 50 == 0:
             log.info(f"  Progression : {i + 1}/{len(products)} — {success} OK / {len(errors)} erreurs")
+            if errors:
+                log.error(f"  Dernière erreur : {errors[-1]}")
 
         time.sleep(0.02)
 
