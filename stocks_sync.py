@@ -166,7 +166,10 @@ def generate_local_flux(lengow_rows, col_indices):
 
         for row in lengow_rows:
             def get(col):
-                return row[col_indices[col]].strip() if col in col_indices else ''
+                idx = col_indices.get(col)
+                if idx is None or idx >= len(row):
+                    return ''
+                return row[idx].strip()
 
             price_raw = get('price')
             price_str = f"{price_raw} EUR" if price_raw else ''
