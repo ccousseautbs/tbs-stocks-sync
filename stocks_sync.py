@@ -358,7 +358,7 @@ def push_local_inventory(creds, products):
         }
 
         try:
-            resp = requests.post(url, headers=headers, json=body, timeout=30)
+            resp = requests.post(url, headers=headers, json=body, timeout=5)
             if resp.status_code == 200:
                 success += 1
             else:
