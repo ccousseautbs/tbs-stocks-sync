@@ -30,6 +30,7 @@ DEVELOPER_EMAIL   = 'ton@email.com'
 SHEET_ID          = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
 TAB_NAME          = 'Stocks'
 LOCAL_FLUX_PATH   = 'docs/flux_local_gmc.csv'
+INVENTORY_PATH    = 'docs/inventaire_magasin.csv'
 SCOPES            = [
     'https://www.googleapis.com/auth/content',
     'https://www.googleapis.com/auth/spreadsheets',
@@ -205,6 +206,30 @@ def generate_local_flux(lengow_rows, col_indices):
             ])
 
     log.info(f"✅ Flux local généré : {LOCAL_FLUX_PATH}")
+
+
+def generate_inventory_file(products):
+    """Génère le fichier d'inventaire magasin pour la source supplémentaire GMC."""
+    log.info(f"Génération fichier inventaire magasin : {len(products)} produits...")
+    os.makedirs(os.path.dirname(INVENTORY_PATH), exist_ok=True)
+
+    with open(INVENTORY_PATH, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['store_code', 'id', 'availability', 'price', 'sale_price', 'quantity'])
+
+        for p in products:
+            price_str = f"{p['price_amount']} {p['price_currency']}" if p['price_amount'] else ''
+            sale_str  = f"{p['sale_amount']} {p['sale_currency']}" if p['sale_amount'] else ''
+            writer.writerow([
+                p['store_code'],
+                p['offer_id'],
+                p['availability'],
+                price_str,
+                sale_str,
+                p['quantity'],
+            ])
+
+    log.info(f"✅ Fichier inventaire généré : {INVENTORY_PATH}")
 
 
 def stream_and_filter(gtin_index):
@@ -445,6 +470,7 @@ def main():
         log.warning("Aucun produit valide trouvé.")
         return
 
+    generate_inventory_file(products)
     write_to_sheet(sheets, products)
 
     success, errors = push_local_inventory(creds, products)
