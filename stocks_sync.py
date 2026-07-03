@@ -135,6 +135,8 @@ def build_gtin_index():
                 log.info(f"Lengow — colonnes : {len(headers)} | offer_id: {idx_offer} | gtin: {idx_gtin}")
                 continue
 
+            log.info(f"Toutes les colonnes Lengow : {headers}")
+
             if idx_gtin is None:
                 continue
 
