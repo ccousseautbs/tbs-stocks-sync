@@ -4,7 +4,7 @@ STOCKS SYNC TBS — Script Python
 2. Lit le flux Lengow → index GTIN → offer_id
 3. Génère le flux local GMC (CSV plat) → publié via GitHub Pages
 4. Lit le flux stocks en streaming → filtre in_stock + store_code valide
-5. Pousse l'inventaire local via Merchant Inventories API v1
+5. Pousse l'inventaire local via Merchant Inventories API v1 (10 threads parallèles)
 6. Écrit le résultat dans Google Sheets
 """
 
@@ -14,6 +14,7 @@ import json
 import logging
 import requests
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -25,26 +26,25 @@ log = logging.getLogger(__name__)
 STOCKS_URL        = 'https://tbs.fr/Storage/Lengow/stocks.csv'
 LENGOW_URL        = 'https://tbs.fr/Storage/Lengow/Lengow.csv'
 MERCHANT_ID       = '110798793'
-DEVELOPER_EMAIL   = 'ton@email.com'  # ← ton email GMC/Google
+DEVELOPER_EMAIL   = 'ton@email.com'
 SHEET_ID          = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
 TAB_NAME          = 'Stocks'
-LOCAL_FLUX_PATH   = 'docs/flux_local_gmc.csv'  # publié via GitHub Pages
+LOCAL_FLUX_PATH   = 'docs/flux_local_gmc.csv'
 SCOPES            = [
     'https://www.googleapis.com/auth/content',
     'https://www.googleapis.com/auth/spreadsheets',
 ]
 MERCHANT_API_BASE      = 'https://merchantapi.googleapis.com/inventories/v1'
 MERCHANT_ACCOUNTS_BASE = 'https://merchantapi.googleapis.com/accounts/v1'
+MAX_WORKERS            = 10  # threads parallèles
 # ────────────────────────────────────────────────────────────
 
-# Colonnes du flux local plat pour GMC
 LOCAL_FLUX_HEADERS = [
     'id', 'title', 'price', 'availability', 'image_link', 'link',
     'gtin', 'brand', 'condition', 'mpn', 'description', 'color',
     'size', 'gender', 'item_group_id',
 ]
 
-# Mapping colonnes Lengow → colonnes flat GMC
 LENGOW_COL_MAP = {
     'offer_id':                               'id',
     'product_attributes.title':               'title',
@@ -63,7 +63,6 @@ LENGOW_COL_MAP = {
     'product_attributes.gender':              'gender',
     'product_attributes.item_group_id':       'item_group_id',
 }
-# ────────────────────────────────────────────────────────────
 
 
 def get_credentials():
@@ -84,13 +83,9 @@ def get_sheets_service(creds):
 
 def register_gcp_project(creds):
     token = creds.token
-    headers = {
-        'Authorization': f'Bearer {token}',
-        'Content-Type':  'application/json',
-    }
+    hdrs = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
     url  = f"{MERCHANT_ACCOUNTS_BASE}/accounts/{MERCHANT_ID}/developerRegistration:registerGcp"
-    body = {'developerEmail': DEVELOPER_EMAIL}
-    resp = requests.post(url, headers=headers, json=body, timeout=15)
+    resp = requests.post(url, headers=hdrs, json={'developerEmail': DEVELOPER_EMAIL}, timeout=15)
     if resp.status_code == 200:
         log.info("✅ Projet GCP enregistré avec succès.")
     elif resp.status_code == 409:
@@ -100,13 +95,12 @@ def register_gcp_project(creds):
 
 
 def build_gtin_index():
-    """Lit le flux Lengow (séparateur virgule) et construit index GTIN → offer_id."""
     log.info(f"Lecture flux Lengow : {LENGOW_URL}")
     response = requests.get(LENGOW_URL, stream=True, timeout=300)
     response.raise_for_status()
 
     gtin_index  = {}
-    lengow_rows = []  # pour la génération du flux local
+    lengow_rows = []
     headers     = None
     idx_offer   = None
     idx_gtin    = None
@@ -135,7 +129,6 @@ def build_gtin_index():
                     idx_gtin = headers.index('EAN')
                 except ValueError:
                     idx_gtin = None
-                # Indices pour le flux local
                 for lengow_col in LENGOW_COL_MAP:
                     if lengow_col in headers:
                         col_indices[lengow_col] = headers.index(lengow_col)
@@ -152,7 +145,6 @@ def build_gtin_index():
                 gtin_index[gtin] = offer_id.lower()
                 lengow_rows.append(row)
 
-    # Dernier fragment
     if buffer.strip() and headers and idx_gtin is not None:
         row = next(csv.reader([buffer.strip()], delimiter=','))
         if len(row) > max(idx_offer, idx_gtin):
@@ -167,9 +159,7 @@ def build_gtin_index():
 
 
 def generate_local_flux(lengow_rows, col_indices):
-    """Génère le CSV plat pour la source locale GMC."""
     log.info(f"Génération flux local GMC : {len(lengow_rows)} produits...")
-
     os.makedirs(os.path.dirname(LOCAL_FLUX_PATH), exist_ok=True)
 
     with open(LOCAL_FLUX_PATH, 'w', newline='', encoding='utf-8') as f:
@@ -177,37 +167,35 @@ def generate_local_flux(lengow_rows, col_indices):
         writer.writerow(LOCAL_FLUX_HEADERS)
 
         for row in lengow_rows:
-            price_raw = ''
-            currency  = 'EUR'
-            if 'product_attributes.price.amount_micros' in col_indices:
-                price_raw = row[col_indices['product_attributes.price.amount_micros']].strip()
-            if 'product_attributes.price.currency_code' in col_indices:
-                currency = row[col_indices['product_attributes.price.currency_code']].strip() or 'EUR'
+            price_raw = row[col_indices['product_attributes.price.amount_micros']].strip() if 'product_attributes.price.amount_micros' in col_indices else ''
+            currency  = row[col_indices['product_attributes.price.currency_code']].strip() or 'EUR' if 'product_attributes.price.currency_code' in col_indices else 'EUR'
             price_str = f"{price_raw} {currency}" if price_raw else ''
 
+            def get(col):
+                return row[col_indices[col]].strip() if col in col_indices else ''
+
             writer.writerow([
-                row[col_indices.get('offer_id', 0)].strip().lower(),
-                row[col_indices['product_attributes.title']].strip() if 'product_attributes.title' in col_indices else '',
+                get('offer_id').lower(),
+                get('product_attributes.title'),
                 price_str,
-                row[col_indices['product_attributes.availability']].strip() if 'product_attributes.availability' in col_indices else '',
-                row[col_indices['product_attributes.image_link']].strip() if 'product_attributes.image_link' in col_indices else '',
-                row[col_indices['product_attributes.link']].strip() if 'product_attributes.link' in col_indices else '',
-                row[col_indices['product_attributes.gtins_01']].strip() if 'product_attributes.gtins_01' in col_indices else '',
-                row[col_indices['product_attributes.brand']].strip() if 'product_attributes.brand' in col_indices else '',
-                row[col_indices['product_attributes.condition']].strip() or 'new' if 'product_attributes.condition' in col_indices else 'new',
-                row[col_indices['product_attributes.mpn']].strip() if 'product_attributes.mpn' in col_indices else '',
-                row[col_indices['product_attributes.description']].strip() if 'product_attributes.description' in col_indices else '',
-                row[col_indices['product_attributes.color']].strip() if 'product_attributes.color' in col_indices else '',
-                row[col_indices['product_attributes.size']].strip() if 'product_attributes.size' in col_indices else '',
-                row[col_indices['product_attributes.gender']].strip() if 'product_attributes.gender' in col_indices else '',
-                row[col_indices['product_attributes.item_group_id']].strip() if 'product_attributes.item_group_id' in col_indices else '',
+                get('product_attributes.availability'),
+                get('product_attributes.image_link'),
+                get('product_attributes.link'),
+                get('product_attributes.gtins_01'),
+                get('product_attributes.brand'),
+                get('product_attributes.condition') or 'new',
+                get('product_attributes.mpn'),
+                get('product_attributes.description'),
+                get('product_attributes.color'),
+                get('product_attributes.size'),
+                get('product_attributes.gender'),
+                get('product_attributes.item_group_id'),
             ])
 
     log.info(f"✅ Flux local généré : {LOCAL_FLUX_PATH}")
 
 
 def stream_and_filter(gtin_index):
-    """Lit le CSV stocks en streaming et filtre les lignes utiles."""
     log.info(f"Téléchargement stocks en streaming : {STOCKS_URL}")
     response = requests.get(STOCKS_URL, stream=True, timeout=300)
     response.raise_for_status()
@@ -275,7 +263,6 @@ def stream_and_filter(gtin_index):
                         sale_amount   = sale_parts[0]
                         sale_currency = sale_parts[1] if len(sale_parts) > 1 else 'EUR'
                 if idx_sale_date is not None and idx_sale_date < len(row):
-                    # Supprimer espaces autour du / pour format RFC 3339
                     sale_date = row[idx_sale_date].strip().strip('"').replace(' ', '')
 
                 qty = 0
@@ -305,83 +292,94 @@ def build_product_name(offer_id):
     return f"accounts/{MERCHANT_ID}/products/local~fr~FR~{offer_id}"
 
 
-def push_local_inventory(creds, products):
-    log.info(f"Push inventaire local pour {len(products)} produits...")
+def push_single_product(args):
+    """Push inventaire pour un seul produit — appelé en parallèle."""
+    p, token = args
+    hdrs = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+    url  = f"{MERCHANT_API_BASE}/{build_product_name(p['offer_id'])}/localInventories:insert"
 
-    token   = creds.token
-    headers = {
-        'Authorization': f'Bearer {token}',
-        'Content-Type':  'application/json',
+    local_attrs = {
+        'availability': p['availability'].upper().replace(' ', '_'),
+        'quantity':     p['quantity'],
     }
 
+    if p['price_amount']:
+        try:
+            local_attrs['price'] = {
+                'amountMicros': str(int(float(p['price_amount']) * 1_000_000)),
+                'currencyCode': p['price_currency'],
+            }
+        except ValueError:
+            pass
+
+    if p['sale_amount']:
+        try:
+            local_attrs['salePrice'] = {
+                'amountMicros': str(int(float(p['sale_amount']) * 1_000_000)),
+                'currencyCode': p['sale_currency'],
+            }
+        except ValueError:
+            pass
+
+    if p['sale_date']:
+        date_parts = p['sale_date'].split('/')
+        if len(date_parts) == 2:
+            local_attrs['salePriceEffectiveDate'] = {
+                'startTime': date_parts[0],
+                'endTime':   date_parts[1],
+            }
+
+    body = {
+        'storeCode':                p['store_code'],
+        'localInventoryAttributes': local_attrs,
+    }
+
+    for attempt in range(2):
+        try:
+            resp = requests.post(url, headers=hdrs, json=body, timeout=15)
+            if resp.status_code == 200:
+                return {'product': p['offer_id'], 'ok': True}
+            else:
+                if attempt == 0:
+                    time.sleep(1)
+                    continue
+                return {'product': p['offer_id'], 'ok': False, 'status': resp.status_code, 'error': resp.text[:300]}
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(1)
+                continue
+            return {'product': p['offer_id'], 'ok': False, 'error': str(e)}
+
+    return {'product': p['offer_id'], 'ok': False, 'error': 'Max retries exceeded'}
+
+
+def push_local_inventory(creds, products):
+    log.info(f"Push inventaire local pour {len(products)} produits ({MAX_WORKERS} threads parallèles)...")
+
+    creds.refresh(Request())
+    token   = creds.token
     success = 0
     errors  = []
+    done    = 0
 
-    for i, p in enumerate(products):
-        # Rafraîchir le token toutes les 100 requêtes
-        if i % 100 == 0:
-            creds.refresh(Request())
-            token = creds.token
-            headers['Authorization'] = f'Bearer {token}'
+    args = [(p, token) for p in products]
 
-        product_name = build_product_name(p['offer_id'])
-        url = f"{MERCHANT_API_BASE}/{product_name}/localInventories:insert"
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(push_single_product, arg): arg[0] for arg in args}
 
-        local_attrs = {
-            'availability': p['availability'].upper().replace(' ', '_'),
-            'quantity':     p['quantity'],
-        }
+        for future in as_completed(futures):
+            result = future.result()
+            done  += 1
 
-        if p['price_amount']:
-            try:
-                local_attrs['price'] = {
-                    'amountMicros': str(int(float(p['price_amount']) * 1_000_000)),
-                    'currencyCode': p['price_currency'],
-                }
-            except ValueError:
-                pass
-
-        if p['sale_amount']:
-            try:
-                local_attrs['salePrice'] = {
-                    'amountMicros': str(int(float(p['sale_amount']) * 1_000_000)),
-                    'currencyCode': p['sale_currency'],
-                }
-            except ValueError:
-                pass
-
-        if p['sale_date']:
-            date_parts = p['sale_date'].split('/')
-            if len(date_parts) == 2:
-                local_attrs['salePriceEffectiveDate'] = {
-                    'startTime': date_parts[0],
-                    'endTime':   date_parts[1],
-                }
-
-        body = {
-            'storeCode':                p['store_code'],
-            'localInventoryAttributes': local_attrs,
-        }
-
-        try:
-            resp = requests.post(url, headers=headers, json=body, timeout=15)
-            if resp.status_code == 200:
+            if result.get('ok'):
                 success += 1
             else:
-                errors.append({
-                    'product': p['offer_id'],
-                    'status':  resp.status_code,
-                    'error':   resp.text[:300],
-                })
-        except Exception as e:
-            errors.append({'product': p['offer_id'], 'error': str(e)})
+                errors.append(result)
 
-        if (i + 1) % 50 == 0:
-            log.info(f"  Progression : {i + 1}/{len(products)} — {success} OK / {len(errors)} erreurs")
-            if errors:
-                log.error(f"  Dernière erreur : {errors[-1]}")
-
-        time.sleep(0.05)
+            if done % 50 == 0:
+                log.info(f"  Progression : {done}/{len(products)} — {success} OK / {len(errors)} erreurs")
+                if errors:
+                    log.error(f"  Dernière erreur : {errors[-1]}")
 
     log.info(f"Push terminé — {success} OK / {len(errors)} erreurs")
     return success, errors
@@ -425,7 +423,6 @@ def main():
 
     gtin_index, lengow_rows, col_indices = build_gtin_index()
 
-    # Générer le flux local CSV pour GitHub Pages
     generate_local_flux(lengow_rows, col_indices)
 
     products = stream_and_filter(gtin_index)
