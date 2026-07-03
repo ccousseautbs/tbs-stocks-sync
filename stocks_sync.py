@@ -1,10 +1,10 @@
 """
 STOCKS SYNC TBS — Script Python
 1. Enregistre le projet GCP auprès de la Merchant API
-2. Lit le flux Lengow → index GTIN → offer_id
-3. Génère le flux local GMC (CSV plat) → publié via GitHub Pages
-4. Lit le flux stocks en streaming → filtre in_stock + store_code valide
-5. Pousse l'inventaire local via Merchant Inventories API v1 (10 threads parallèles)
+2. Lit le flux Lengow Google Merchant → index GTIN → offer_id + génère flux local GMC
+3. Lit le flux stocks en streaming → filtre in_stock + store_code valide
+4. Pousse l'inventaire local via Merchant Inventories API v1 (10 threads parallèles)
+5. Publie le flux local via GitHub Pages
 6. Écrit le résultat dans Google Sheets
 """
 
@@ -36,7 +36,7 @@ SCOPES            = [
 ]
 MERCHANT_API_BASE      = 'https://merchantapi.googleapis.com/inventories/v1'
 MERCHANT_ACCOUNTS_BASE = 'https://merchantapi.googleapis.com/accounts/v1'
-MAX_WORKERS            = 10  # threads parallèles
+MAX_WORKERS            = 10
 # ────────────────────────────────────────────────────────────
 
 LOCAL_FLUX_HEADERS = [
@@ -45,7 +45,8 @@ LOCAL_FLUX_HEADERS = [
     'size', 'gender', 'item_group_id',
 ]
 
-LENGOW_COL_MAP = {
+# Colonnes Lengow Google Merchant feed (séparateur |)
+LENGOW_COLS = {
     'offer_id':                               'id',
     'product_attributes.title':               'title',
     'product_attributes.price.amount_micros': 'price',
@@ -83,9 +84,9 @@ def get_sheets_service(creds):
 
 def register_gcp_project(creds):
     token = creds.token
-    hdrs = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-    url  = f"{MERCHANT_ACCOUNTS_BASE}/accounts/{MERCHANT_ID}/developerRegistration:registerGcp"
-    resp = requests.post(url, headers=hdrs, json={'developerEmail': DEVELOPER_EMAIL}, timeout=15)
+    hdrs  = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+    url   = f"{MERCHANT_ACCOUNTS_BASE}/accounts/{MERCHANT_ID}/developerRegistration:registerGcp"
+    resp  = requests.post(url, headers=hdrs, json={'developerEmail': DEVELOPER_EMAIL}, timeout=15)
     if resp.status_code == 200:
         log.info("✅ Projet GCP enregistré avec succès.")
     elif resp.status_code == 409:
@@ -95,6 +96,7 @@ def register_gcp_project(creds):
 
 
 def build_gtin_index():
+    """Lit le flux Lengow Google Merchant (séparateur |) et construit index GTIN → offer_id."""
     log.info(f"Lecture flux Lengow : {LENGOW_URL}")
     response = requests.get(LENGOW_URL, stream=True, timeout=300)
     response.raise_for_status()
@@ -102,9 +104,9 @@ def build_gtin_index():
     gtin_index  = {}
     lengow_rows = []
     headers     = None
+    col_indices = {}
     idx_offer   = None
     idx_gtin    = None
-    col_indices = {}
 
     buffer = ''
     for chunk in response.iter_content(chunk_size=1024 * 1024, decode_unicode=True):
@@ -120,88 +122,93 @@ def build_gtin_index():
             row = next(csv.reader([line], delimiter='|'))
 
             if headers is None:
+                # Nettoyer les guillemets parasites sur chaque header
                 headers = [h.strip().strip("'\"") for h in row]
-                try:
-                    idx_offer = headers.index('offer_id')
-                except ValueError:
-                    idx_offer = 0
-                try:
-                    idx_gtin = headers.index('product_attributes.gtins_01')
-                except ValueError:
-                    idx_gtin = None
-                for lengow_col in LENGOW_COL_MAP:
+
+                # Construire col_indices depuis les headers nettoyés
+                for lengow_col in LENGOW_COLS:
                     if lengow_col in headers:
                         col_indices[lengow_col] = headers.index(lengow_col)
+
+                # Indices GTIN et offer_id
+                idx_offer = col_indices.get('offer_id', 0)
+                idx_gtin  = col_indices.get('product_attributes.gtins_01')
+
                 log.info(f"Lengow — colonnes : {len(headers)} | offer_id: {idx_offer} | gtin: {idx_gtin}")
+                log.info(f"col_indices : {len(col_indices)} colonnes mappées")
                 continue
 
             if idx_gtin is None:
                 continue
 
-            offer_id = row[idx_offer].strip().strip("'\"") if idx_offer < len(row) else ''
-            gtin     = row[idx_gtin].strip().strip("'\"")  if idx_gtin  < len(row) else ''
+            # Nettoyer les guillemets sur les valeurs
+            row_clean = [v.strip().strip("'\"") for v in row]
+
+            offer_id = row_clean[idx_offer] if idx_offer < len(row_clean) else ''
+            gtin     = row_clean[idx_gtin]  if idx_gtin  < len(row_clean) else ''
 
             if gtin and offer_id:
                 gtin_index[gtin] = offer_id.lower()
-                lengow_rows.append(row)
+                lengow_rows.append(row_clean)
 
+    # Dernier fragment
     if buffer.strip() and headers and idx_gtin is not None:
-        row = next(csv.reader([buffer.strip()], delimiter=','))
-        if len(row) > max(idx_offer, idx_gtin):
-            offer_id = row[idx_offer].strip().strip("'\"")
-            gtin     = row[idx_gtin].strip().strip("'\"")
+        row = next(csv.reader([buffer.strip()], delimiter='|'))
+        row_clean = [v.strip().strip("'\"") for v in row]
+        if len(row_clean) > max(idx_offer, idx_gtin):
+            offer_id = row_clean[idx_offer]
+            gtin     = row_clean[idx_gtin]
             if gtin and offer_id:
                 gtin_index[gtin] = offer_id.lower()
-                lengow_rows.append(row)
+                lengow_rows.append(row_clean)
 
-    log.info(f"Index GTIN → offer_id : {len(gtin_index)} entrées")
+    log.info(f"Index GTIN → offer_id : {len(gtin_index)} entrées | {len(lengow_rows)} lignes Lengow")
     return gtin_index, lengow_rows, col_indices
 
 
 def generate_local_flux(lengow_rows, col_indices):
+    """Génère le CSV plat pour la source locale GMC."""
     log.info(f"Génération flux local GMC : {len(lengow_rows)} produits...")
     os.makedirs(os.path.dirname(LOCAL_FLUX_PATH), exist_ok=True)
+
+    def get(row, col):
+        idx = col_indices.get(col)
+        if idx is None or idx >= len(row):
+            return ''
+        return row[idx]
 
     with open(LOCAL_FLUX_PATH, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(LOCAL_FLUX_HEADERS)
 
         for row in lengow_rows:
-            def get(col):
-                return row[col_indices[col]].strip() if col in col_indices else ''
-
-            price_raw = get('price')
-            price_str = f"{price_raw} EUR" if price_raw else ''
-
-            # Convertir stock → availability GMC
-            stock_val = get('stock')
-            try:
-                avail = 'in_stock' if int(stock_val) > 0 else 'out_of_stock'
-            except (ValueError, TypeError):
-                avail = 'in_stock' if stock_val and stock_val != '0' else 'out_of_stock'
+            price_raw = get(row, 'product_attributes.price.amount_micros')
+            currency  = get(row, 'product_attributes.price.currency_code') or 'EUR'
+            price_str = f"{price_raw} {currency}" if price_raw else ''
 
             writer.writerow([
-                get('identifier').lower(),
-                get('Titre du produit'),
+                get(row, 'offer_id').lower(),
+                get(row, 'product_attributes.title'),
                 price_str,
-                avail,
-                get('image_url'),
-                get('product_url'),
-                get('EAN'),
-                get('brand'),
-                'new',
-                get('MPN'),
-                get('description'),
-                get('Couleur de filtre'),
-                get('axis_size'),
-                get('Genre'),
-                get('parent'),
+                get(row, 'product_attributes.availability').lower(),
+                get(row, 'product_attributes.image_link'),
+                get(row, 'product_attributes.link'),
+                get(row, 'product_attributes.gtins_01'),
+                get(row, 'product_attributes.brand'),
+                get(row, 'product_attributes.condition').lower() or 'new',
+                get(row, 'product_attributes.mpn'),
+                get(row, 'product_attributes.description'),
+                get(row, 'product_attributes.color'),
+                get(row, 'product_attributes.size'),
+                get(row, 'product_attributes.gender').lower(),
+                get(row, 'product_attributes.item_group_id'),
             ])
 
     log.info(f"✅ Flux local généré : {LOCAL_FLUX_PATH}")
 
 
 def stream_and_filter(gtin_index):
+    """Lit le CSV stocks en streaming et filtre les lignes utiles."""
     log.info(f"Téléchargement stocks en streaming : {STOCKS_URL}")
     response = requests.get(STOCKS_URL, stream=True, timeout=300)
     response.raise_for_status()
@@ -360,6 +367,7 @@ def push_single_product(args):
 
 
 def push_local_inventory(creds, products):
+    """Push inventaire local en parallèle via ThreadPoolExecutor."""
     log.info(f"Push inventaire local pour {len(products)} produits ({MAX_WORKERS} threads parallèles)...")
 
     creds.refresh(Request())
