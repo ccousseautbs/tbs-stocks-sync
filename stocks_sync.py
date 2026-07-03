@@ -90,7 +90,7 @@ def register_gcp_project(creds):
     }
     url  = f"{MERCHANT_ACCOUNTS_BASE}/accounts/{MERCHANT_ID}/developerRegistration:registerGcp"
     body = {'developerEmail': DEVELOPER_EMAIL}
-    resp = requests.post(url, headers=headers, json=body, timeout=30)
+    resp = requests.post(url, headers=headers, json=body, timeout=15)
     if resp.status_code == 200:
         log.info("✅ Projet GCP enregistré avec succès.")
     elif resp.status_code == 409:
@@ -323,6 +323,7 @@ def push_local_inventory(creds, products):
             creds.refresh(Request())
             token = creds.token
             headers['Authorization'] = f'Bearer {token}'
+
         product_name = build_product_name(p['offer_id'])
         url = f"{MERCHANT_API_BASE}/{product_name}/localInventories:insert"
 
@@ -363,7 +364,7 @@ def push_local_inventory(creds, products):
         }
 
         try:
-            resp = requests.post(url, headers=headers, json=body, timeout=5)
+            resp = requests.post(url, headers=headers, json=body, timeout=15)
             if resp.status_code == 200:
                 success += 1
             else:
@@ -380,7 +381,7 @@ def push_local_inventory(creds, products):
             if errors:
                 log.error(f"  Dernière erreur : {errors[-1]}")
 
-        time.sleep(0.02)
+        time.sleep(0.05)
 
     log.info(f"Push terminé — {success} OK / {len(errors)} erreurs")
     return success, errors
