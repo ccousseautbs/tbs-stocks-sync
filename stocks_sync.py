@@ -216,6 +216,7 @@ def generate_inventory_file(products):
             'store_code', 'id', 'availability', 'price', 'sale_price', 'quantity',
             'custom_label_0', 'custom_label_1', 'custom_label_2',
             'custom_label_3', 'custom_label_4',
+            'pickup_method', 'pickup_sla',
         ])
 
         for p in products:
@@ -247,6 +248,8 @@ def generate_inventory_file(products):
                 str(p['quantity']),           # custom_label_2
                 promo_dates,                  # custom_label_3
                 p.get('ads_grouping', ''),    # custom_label_4 ex: "Tennis Femme"
+                'buy',                        # pickup_method
+                'same_day',                   # pickup_sla
             ])
 
     log.info(f"✅ Fichier inventaire généré : {INVENTORY_PATH}")
