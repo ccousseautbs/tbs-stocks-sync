@@ -1,10 +1,10 @@
 """
 STOCKS SYNC TBS — Script Python
 1. Enregistre le projet GCP auprès de la Merchant API
-2. Lit le flux Lengow Google Merchant → index GTIN → offer_id + génère flux local GMC
-3. Lit le flux stocks en streaming → filtre in_stock + store_code valide
-4. Pousse l'inventaire local via Merchant Inventories API v1 (10 threads parallèles)
-5. Publie le flux local via GitHub Pages
+2. Lit le flux Lengow Google Merchant → index GTIN → offer_id + ads_grouping
+3. Génère flux_local_gmc.csv + inventaire_magasin.csv → GitHub Pages
+4. Lit le flux stocks en streaming → filtre in_stock + store_code valide
+5. Pousse l'inventaire local via Merchant Inventories API v1 (10 threads parallèles)
 6. Écrit le résultat dans Google Sheets
 """
 
@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 STOCKS_URL        = 'https://tbs.fr/Storage/Lengow/stocks.csv'
 LENGOW_URL        = 'https://feeds.lengow.io/3/jzdj298'
 MERCHANT_ID       = '110798793'
-DEVELOPER_EMAIL   = 'ccousseau@tbs.fr'
+DEVELOPER_EMAIL   = 'ton@email.com'
 SHEET_ID          = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
 TAB_NAME          = 'Stocks'
 LOCAL_FLUX_PATH   = 'docs/flux_local_gmc.csv'
@@ -46,7 +46,6 @@ LOCAL_FLUX_HEADERS = [
     'size', 'gender', 'item_group_id',
 ]
 
-# Colonnes Lengow Google Merchant feed (séparateur |)
 LENGOW_COLS = {
     'offer_id':                               'id',
     'product_attributes.title':               'title',
@@ -64,6 +63,7 @@ LENGOW_COLS = {
     'product_attributes.size':                'size',
     'product_attributes.gender':              'gender',
     'product_attributes.item_group_id':       'item_group_id',
+    'product_attributes.ads_grouping':        'ads_grouping',
 }
 
 
@@ -97,17 +97,19 @@ def register_gcp_project(creds):
 
 
 def build_gtin_index():
-    """Lit le flux Lengow Google Merchant (séparateur |) et construit index GTIN → offer_id."""
+    """Lit le flux Lengow Google Merchant (séparateur |) et construit les index."""
     log.info(f"Lecture flux Lengow : {LENGOW_URL}")
     response = requests.get(LENGOW_URL, stream=True, timeout=300)
     response.raise_for_status()
 
-    gtin_index  = {}
-    lengow_rows = []
-    headers     = None
-    col_indices = {}
-    idx_offer   = None
-    idx_gtin    = None
+    gtin_index        = {}
+    gtin_ads_grouping = {}
+    lengow_rows       = []
+    headers           = None
+    col_indices       = {}
+    idx_offer         = None
+    idx_gtin          = None
+    idx_ads           = None
 
     buffer = ''
     for chunk in response.iter_content(chunk_size=1024 * 1024, decode_unicode=True):
@@ -123,52 +125,47 @@ def build_gtin_index():
             row = next(csv.reader([line], delimiter='|'))
 
             if headers is None:
-                # Nettoyer les guillemets parasites sur chaque header
                 headers = [h.strip().strip("'\"") for h in row]
-
-                # Construire col_indices depuis les headers nettoyés
                 for lengow_col in LENGOW_COLS:
                     if lengow_col in headers:
                         col_indices[lengow_col] = headers.index(lengow_col)
-
-                # Indices GTIN et offer_id
                 idx_offer = col_indices.get('offer_id', 0)
                 idx_gtin  = col_indices.get('product_attributes.gtins_01')
-
-                log.info(f"Lengow — colonnes : {len(headers)} | offer_id: {idx_offer} | gtin: {idx_gtin}")
-                log.info(f"col_indices : {len(col_indices)} colonnes mappées")
+                idx_ads   = col_indices.get('product_attributes.ads_grouping')
+                log.info(f"Lengow — colonnes : {len(headers)} | offer_id: {idx_offer} | gtin: {idx_gtin} | ads_grouping: {idx_ads}")
                 continue
 
             if idx_gtin is None:
                 continue
 
-            # Nettoyer les guillemets sur les valeurs
             row_clean = [v.strip().strip("'\"") for v in row]
-
-            offer_id = row_clean[idx_offer] if idx_offer < len(row_clean) else ''
-            gtin     = row_clean[idx_gtin]  if idx_gtin  < len(row_clean) else ''
+            offer_id  = row_clean[idx_offer] if idx_offer < len(row_clean) else ''
+            gtin      = row_clean[idx_gtin]  if idx_gtin  < len(row_clean) else ''
+            ads_group = row_clean[idx_ads]   if idx_ads and idx_ads < len(row_clean) else ''
 
             if gtin and offer_id:
-                gtin_index[gtin] = offer_id.lower()
+                gtin_index[gtin]        = offer_id.lower()
+                gtin_ads_grouping[gtin] = ads_group
                 lengow_rows.append(row_clean)
 
-    # Dernier fragment
     if buffer.strip() and headers and idx_gtin is not None:
         row = next(csv.reader([buffer.strip()], delimiter='|'))
         row_clean = [v.strip().strip("'\"") for v in row]
         if len(row_clean) > max(idx_offer, idx_gtin):
-            offer_id = row_clean[idx_offer]
-            gtin     = row_clean[idx_gtin]
+            offer_id  = row_clean[idx_offer]
+            gtin      = row_clean[idx_gtin]
+            ads_group = row_clean[idx_ads] if idx_ads and idx_ads < len(row_clean) else ''
             if gtin and offer_id:
-                gtin_index[gtin] = offer_id.lower()
+                gtin_index[gtin]        = offer_id.lower()
+                gtin_ads_grouping[gtin] = ads_group
                 lengow_rows.append(row_clean)
 
     log.info(f"Index GTIN → offer_id : {len(gtin_index)} entrées | {len(lengow_rows)} lignes Lengow")
-    return gtin_index, lengow_rows, col_indices
+    return gtin_index, lengow_rows, col_indices, gtin_ads_grouping
 
 
 def generate_local_flux(lengow_rows, col_indices):
-    """Génère le CSV plat pour la source locale GMC."""
+    """Génère le CSV plat pour la source principale locale GMC."""
     log.info(f"Génération flux local GMC : {len(lengow_rows)} produits...")
     os.makedirs(os.path.dirname(LOCAL_FLUX_PATH), exist_ok=True)
 
@@ -215,14 +212,29 @@ def generate_inventory_file(products):
 
     with open(INVENTORY_PATH, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
-        writer.writerow(['store_code', 'id', 'availability', 'price', 'sale_price', 'quantity'])
+        writer.writerow([
+            'store_code', 'id', 'availability', 'price', 'sale_price', 'quantity',
+            'custom_label_0', 'custom_label_1', 'custom_label_2',
+            'custom_label_3', 'custom_label_4',
+        ])
 
         for p in products:
             price_str = f"{p['price_amount']} {p['price_currency']}" if p['price_amount'] else ''
-            # Vider sale_price si identique au price (évite le prix barré incorrect)
-            sale_same = (p['sale_amount'] and p['price_amount'] and
-                        round(float(p['sale_amount']), 2) == round(float(p['price_amount']), 2))
-            sale_str  = '' if sale_same else (f"{p['sale_amount']} {p['sale_currency']}" if p['sale_amount'] else '')
+
+            # Vider sale_price si identique au price
+            sale_same = False
+            if p['sale_amount'] and p['price_amount']:
+                try:
+                    sale_same = round(float(p['sale_amount']), 2) == round(float(p['price_amount']), 2)
+                except ValueError:
+                    pass
+            sale_str = '' if sale_same else (f"{p['sale_amount']} {p['sale_currency']}" if p['sale_amount'] else '')
+
+            # custom_label_3 : dates promo si sale_price valide et différent du price
+            promo_dates = ''
+            if not sale_same and p['sale_amount'] and p['sale_date']:
+                promo_dates = p['sale_date'].replace('/', ' / ')
+
             writer.writerow([
                 p['store_code'],
                 p['offer_id'],
@@ -230,12 +242,17 @@ def generate_inventory_file(products):
                 price_str,
                 sale_str,
                 p['quantity'],
+                'IN_STORE',                   # custom_label_0
+                p['store_code'],              # custom_label_1
+                str(p['quantity']),           # custom_label_2
+                promo_dates,                  # custom_label_3
+                p.get('ads_grouping', ''),    # custom_label_4 ex: "Tennis Femme"
             ])
 
     log.info(f"✅ Fichier inventaire généré : {INVENTORY_PATH}")
 
 
-def stream_and_filter(gtin_index):
+def stream_and_filter(gtin_index, gtin_ads_grouping):
     """Lit le CSV stocks en streaming et filtre les lignes utiles."""
     log.info(f"Téléchargement stocks en streaming : {STOCKS_URL}")
     response = requests.get(STOCKS_URL, stream=True, timeout=300)
@@ -323,6 +340,7 @@ def stream_and_filter(gtin_index):
                     'sale_currency':  sale_currency,
                     'sale_date':      sale_date,
                     'quantity':       qty,
+                    'ads_grouping':   gtin_ads_grouping.get(gtin, ''),
                 })
 
     log.info(f"Lignes lues : {total} | Produits valides : {len(products)} | Sans match GTIN : {no_match}")
@@ -353,7 +371,15 @@ def push_single_product(args):
         except ValueError:
             pass
 
-    if p['sale_amount']:
+    # Sale price uniquement si différent du price
+    sale_same = False
+    if p['sale_amount'] and p['price_amount']:
+        try:
+            sale_same = round(float(p['sale_amount']), 2) == round(float(p['price_amount']), 2)
+        except ValueError:
+            pass
+
+    if p['sale_amount'] and not sale_same:
         try:
             local_attrs['salePrice'] = {
                 'amountMicros': str(int(float(p['sale_amount']) * 1_000_000)),
@@ -362,7 +388,7 @@ def push_single_product(args):
         except ValueError:
             pass
 
-    if p['sale_date']:
+    if p['sale_date'] and not sale_same:
         date_parts = p['sale_date'].split('/')
         if len(date_parts) == 2:
             local_attrs['salePriceEffectiveDate'] = {
@@ -430,7 +456,7 @@ def push_local_inventory(creds, products):
 def write_to_sheet(sheets, products):
     log.info(f"Écriture dans Sheet — onglet {TAB_NAME}...")
 
-    headers_row = ['id', 'store_code', 'availability', 'price', 'sale_price', 'quantity']
+    headers_row = ['id', 'store_code', 'availability', 'price', 'sale_price', 'quantity', 'ads_grouping']
     rows = [headers_row]
     for p in products:
         rows.append([
@@ -440,6 +466,7 @@ def write_to_sheet(sheets, products):
             f"{p['price_amount']} {p['price_currency']}",
             f"{p['sale_amount']} {p['sale_currency']}" if p['sale_amount'] else '',
             p['quantity'],
+            p.get('ads_grouping', ''),
         ])
 
     sheets.spreadsheets().values().clear(
@@ -463,11 +490,11 @@ def main():
 
     register_gcp_project(creds)
 
-    gtin_index, lengow_rows, col_indices = build_gtin_index()
+    gtin_index, lengow_rows, col_indices, gtin_ads_grouping = build_gtin_index()
 
     generate_local_flux(lengow_rows, col_indices)
 
-    products = stream_and_filter(gtin_index)
+    products = stream_and_filter(gtin_index, gtin_ads_grouping)
 
     if not products:
         log.warning("Aucun produit valide trouvé.")
