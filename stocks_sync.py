@@ -31,6 +31,7 @@ SHEET_ID          = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
 TAB_NAME          = 'Stocks'
 LOCAL_FLUX_PATH   = 'docs/flux_local_gmc.csv'
 INVENTORY_PATH    = 'docs/inventaire_magasin.csv'
+LABELS_PATH       = 'docs/labels_local_gmc.csv'
 SCOPES            = [
     'https://www.googleapis.com/auth/content',
     'https://www.googleapis.com/auth/spreadsheets',
@@ -214,8 +215,6 @@ def generate_inventory_file(products):
         writer = csv.writer(f)
         writer.writerow([
             'store_code', 'id', 'availability', 'price', 'sale_price', 'quantity',
-            'custom_label_0', 'custom_label_1', 'custom_label_2',
-            'custom_label_3', 'custom_label_4',
             'pickup_method', 'pickup_sla',
         ])
 
@@ -243,16 +242,51 @@ def generate_inventory_file(products):
                 price_str,
                 sale_str,
                 p['quantity'],
-                'IN_STORE',                   # custom_label_0
-                p['store_code'],              # custom_label_1
-                str(p['quantity']),           # custom_label_2
-                promo_dates,                  # custom_label_3
-                p.get('ads_grouping', ''),    # custom_label_4 ex: "Tennis Femme"
-                'buy',                        # pickup_method
-                'same_day',                   # pickup_sla
+                'buy',       # pickup_method
+                'same_day',  # pickup_sla
             ])
 
     log.info(f"✅ Fichier inventaire généré : {INVENTORY_PATH}")
+
+
+def generate_labels_file(products):
+    """Génère le fichier de custom labels pour la source supplémentaire locale GMC."""
+    log.info(f"Génération fichier labels : {len(products)} produits...")
+    os.makedirs(os.path.dirname(LABELS_PATH), exist_ok=True)
+
+    # Dédupliquer par offer_id (un produit peut avoir plusieurs magasins)
+    seen = {}
+    for p in products:
+        if p['offer_id'] not in seen:
+            seen[p['offer_id']] = p
+
+    with open(LABELS_PATH, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['id', 'custom_label_0', 'custom_label_1', 'custom_label_2',
+                         'custom_label_3', 'custom_label_4'])
+
+        for offer_id, p in seen.items():
+            # custom_label_3 : dates promo si sale_price valide et différent du price
+            promo_dates = ''
+            sale_same = False
+            if p['sale_amount'] and p['price_amount']:
+                try:
+                    sale_same = round(float(p['sale_amount']), 2) == round(float(p['price_amount']), 2)
+                except ValueError:
+                    pass
+            if not sale_same and p['sale_amount'] and p['sale_date']:
+                promo_dates = p['sale_date'].replace('/', ' / ')
+
+            writer.writerow([
+                offer_id,
+                'IN_STORE',                 # custom_label_0
+                p['store_code'],            # custom_label_1 — magasin principal
+                str(p['quantity']),         # custom_label_2
+                promo_dates,                # custom_label_3
+                p.get('ads_grouping', ''), # custom_label_4 ex: "Tennis Femme"
+            ])
+
+    log.info(f"✅ Fichier labels généré : {LABELS_PATH} ({len(seen)} produits uniques)")
 
 
 def stream_and_filter(gtin_index, gtin_ads_grouping):
@@ -504,6 +538,7 @@ def main():
         return
 
     generate_inventory_file(products)
+    generate_labels_file(products)
     write_to_sheet(sheets, products)
 
     success, errors = push_local_inventory(creds, products)
