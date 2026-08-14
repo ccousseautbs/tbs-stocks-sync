@@ -506,19 +506,26 @@ def write_to_sheet(sheets, products):
             p.get('ads_grouping', ''),
         ])
 
-    sheets.spreadsheets().values().clear(
-        spreadsheetId=SHEET_ID,
-        range=TAB_NAME,
-    ).execute()
-
-    sheets.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
-        range=f"{TAB_NAME}!A1",
-        valueInputOption='RAW',
-        body={'values': rows},
-    ).execute()
-
-    log.info(f"✅ Sheet mis à jour : {len(products)} produits")
+    for attempt in range(3):
+        try:
+            sheets.spreadsheets().values().clear(
+                spreadsheetId=SHEET_ID,
+                range=TAB_NAME,
+            ).execute()
+            sheets.spreadsheets().values().update(
+                spreadsheetId=SHEET_ID,
+                range=f"{TAB_NAME}!A1",
+                valueInputOption='RAW',
+                body={'values': rows},
+            ).execute()
+            log.info(f"✅ Sheet mis à jour : {len(products)} produits")
+            break
+        except Exception as e:
+            if attempt < 2:
+                log.warning(f"Sheets indisponible, retry {attempt + 1}/3 dans 15s... ({e})")
+                time.sleep(15)
+            else:
+                log.error(f"Sheets erreur après 3 tentatives : {e}")
 
 
 def main():
