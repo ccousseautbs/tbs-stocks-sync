@@ -9,6 +9,7 @@ permissions:
   contents: write
   pages: write
   id-token: write
+  actions: write
 
 jobs:
   sync:
@@ -41,3 +42,9 @@ jobs:
 
       - name: Deploy to GitHub Pages
         uses: actions/deploy-pages@v4
+
+      - name: Keepalive
+        if: always()
+        run: gh api -X PUT repos/${{ github.repository }}/actions/workflows/stocks-sync.yml/enable
+        env:
+          GH_TOKEN: ${{ github.token }}
