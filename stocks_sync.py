@@ -1,45 +1,77 @@
 """
-STOCKS SYNC TBS — Script Python
+STOCKS SYNC TBS — Script Python (version fusion Lengow FR)
+
 1. Enregistre le projet GCP auprès de la Merchant API
-2. Lit le flux Lengow Google Merchant → index GTIN → offer_id + ads_grouping
-3. Génère flux_local_gmc.csv + inventaire_magasin.csv → GitHub Pages
-4. Lit le flux stocks en streaming → filtre in_stock + store_code valide
-5. Pousse l'inventaire local via Merchant Inventories API v1 (10 threads parallèles)
+2. Lit le flux Lengow Google Merchant → index GTIN → offer_id (+ ads_grouping)
+3. Lit le flux stocks en streaming → garde in_stock + quantité > 0 + vraie boutique
+4. Génère inventaire_magasin.csv (sans prix : le prix vient du flux principal Lengow FR)
+5. (Optionnel) Pousse l'inventaire via Merchant Inventories API v1
 6. Écrit le résultat dans Google Sheets
+
+Transition : tant que la source Local FR (GMC_LOCAL_FR) existe encore dans GMC,
+GENERATE_LEGACY_LOCAL_FILES = True continue de produire flux_local_gmc.csv et
+labels_local_gmc.csv. Passer à False une fois Local FR supprimée.
 """
 
-import os
 import csv
+import io
 import json
 import logging
-import requests
+import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from google.oauth2 import service_account
+
+import requests
 from google.auth.transport.requests import Request
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 log = logging.getLogger(__name__)
 
 # ─── CONFIG ─────────────────────────────────────────────────
-STOCKS_URL        = 'https://tbs.fr/Storage/Lengow/stocks.csv'
-LENGOW_URL        = 'https://feeds.lengow.io/3/jzdj298'
-MERCHANT_ID       = '110798793'
-DEVELOPER_EMAIL   = 'ton@email.com'
-SHEET_ID          = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
-TAB_NAME          = 'Stocks'
-LOCAL_FLUX_PATH   = 'docs/flux_local_gmc.csv'
-INVENTORY_PATH    = 'docs/inventaire_magasin.csv'
-LABELS_PATH       = 'docs/labels_local_gmc.csv'
-SCOPES            = [
+STOCKS_URL      = 'https://tbs.fr/Storage/Lengow/stocks.csv'
+LENGOW_URL      = 'https://feeds.lengow.io/3/jzdj298'
+MERCHANT_ID     = '110798793'
+DEVELOPER_EMAIL = 'ton@email.com'   # ⚠️ à remplacer par ton adresse
+SHEET_ID        = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
+TAB_NAME        = 'Stocks'
+INVENTORY_PATH  = 'docs/inventaire_magasin.csv'
+LOCAL_FLUX_PATH = 'docs/flux_local_gmc.csv'    # legacy (source Local FR)
+LABELS_PATH     = 'docs/labels_local_gmc.csv'  # legacy (source Local FR)
+SCOPES = [
     'https://www.googleapis.com/auth/content',
     'https://www.googleapis.com/auth/spreadsheets',
 ]
 MERCHANT_API_BASE      = 'https://merchantapi.googleapis.com/inventories/v1'
 MERCHANT_ACCOUNTS_BASE = 'https://merchantapi.googleapis.com/accounts/v1'
 MAX_WORKERS            = 10
+
+# Interrupteurs
+GENERATE_LEGACY_LOCAL_FILES = True   # False une fois Local FR supprimée dans GMC
+ENABLE_API_PUSH             = False  # True seulement si l'inventaire passe par l'API et non par le fichier
+LOWERCASE_OFFER_IDS         = False  # garder la casse exacte des offer_id Lengow FR
+
+# Nom de produit Merchant API ciblé par le push (contentLanguage~feedLabel~offerId)
+PRODUCT_NAME_TEMPLATE = 'fr~FR~{offer_id}'
+
+# Boutiques
+VALID_STORE_RE = re.compile(r'^\d{5}_.+TBS$')   # ex. 03902_ANGERS_TBS, 08210_ST-GILLES-TBS
+STORE_CODE_MAP = {
+    # code reçu dans l'export → code magasin GMC correct ('' = ligne exclue)
+    '16134378928582518495': '',   # ⚠️ à renseigner avec le bon code boutique
+}
+
+# Retrait du stock boutique (surcharge le défaut ship_to_store de Lengow FR)
+PICKUP_METHOD        = 'buy'
+DEFAULT_PICKUP_SLA   = 'same_day'
+PICKUP_SLA_BY_STORE  = {
+    # '01756_LA-ROCHELLE_TBS': 'next_day',
+}
 # ────────────────────────────────────────────────────────────
+
+INVENTORY_HEADERS = ['store_code', 'id', 'availability', 'quantity', 'pickup_method', 'pickup_sla']
 
 LOCAL_FLUX_HEADERS = [
     'id', 'title', 'price', 'availability', 'image_link', 'link',
@@ -47,515 +79,302 @@ LOCAL_FLUX_HEADERS = [
     'size', 'gender', 'item_group_id',
 ]
 
-LENGOW_COLS = {
-    'offer_id':                               'id',
-    'product_attributes.title':               'title',
-    'product_attributes.price.amount_micros': 'price',
-    'product_attributes.price.currency_code': 'price_currency',
-    'product_attributes.availability':        'availability',
-    'product_attributes.image_link':          'image_link',
-    'product_attributes.link':                'link',
-    'product_attributes.gtins_01':            'gtin',
-    'product_attributes.brand':               'brand',
-    'product_attributes.condition':           'condition',
-    'product_attributes.mpn':                 'mpn',
-    'product_attributes.description':         'description',
-    'product_attributes.color':               'color',
-    'product_attributes.size':                'size',
-    'product_attributes.gender':              'gender',
-    'product_attributes.item_group_id':       'item_group_id',
-    'product_attributes.ads_grouping':        'ads_grouping',
-}
+LENGOW_COLS = [
+    'offer_id',
+    'product_attributes.title',
+    'product_attributes.price.amount_micros',
+    'product_attributes.price.currency_code',
+    'product_attributes.availability',
+    'product_attributes.image_link',
+    'product_attributes.link',
+    'product_attributes.gtins_01',
+    'product_attributes.brand',
+    'product_attributes.condition',
+    'product_attributes.mpn',
+    'product_attributes.description',
+    'product_attributes.color',
+    'product_attributes.size',
+    'product_attributes.gender',
+    'product_attributes.item_group_id',
+    'product_attributes.ads_grouping',
+]
 
 
+# ─── OUTILS ─────────────────────────────────────────────────
+def clean(value):
+    return value.strip().strip("'\"") if value else ''
+
+
+def stream_csv(url, delimiter):
+    """Lit un CSV distant en streaming. csv gère les retours à la ligne entre guillemets."""
+    resp = requests.get(url, stream=True, timeout=300)
+    resp.raise_for_status()
+    resp.raw.decode_content = True
+    text = io.TextIOWrapper(resp.raw, encoding='utf-8-sig', errors='replace', newline='')
+    return csv.reader(text, delimiter=delimiter)
+
+
+def normalize_id(offer_id):
+    return offer_id.lower() if LOWERCASE_OFFER_IDS else offer_id
+
+
+def resolve_store(raw_store):
+    """Retourne le code boutique valide, ou '' si la ligne doit être exclue."""
+    store = STORE_CODE_MAP.get(raw_store, raw_store)
+    if not store or store == 'NONE':
+        return ''
+    return store if VALID_STORE_RE.match(store) else ''
+
+
+# ─── AUTH ───────────────────────────────────────────────────
 def get_credentials():
     key_json = os.environ.get('GCP_KEY')
     if not key_json:
         raise ValueError("Variable d'environnement GCP_KEY manquante.")
-    key_data = json.loads(key_json)
-    creds = service_account.Credentials.from_service_account_info(
-        key_data, scopes=SCOPES
-    )
+    creds = service_account.Credentials.from_service_account_info(json.loads(key_json), scopes=SCOPES)
     creds.refresh(Request())
     return creds
 
 
-def get_sheets_service(creds):
-    return build('sheets', 'v4', credentials=creds)
-
-
 def register_gcp_project(creds):
-    token = creds.token
-    hdrs  = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-    url   = f"{MERCHANT_ACCOUNTS_BASE}/accounts/{MERCHANT_ID}/developerRegistration:registerGcp"
-    resp  = requests.post(url, headers=hdrs, json={'developerEmail': DEVELOPER_EMAIL}, timeout=15)
-    if resp.status_code == 200:
-        log.info("✅ Projet GCP enregistré avec succès.")
-    elif resp.status_code == 409:
-        log.info("✅ Projet GCP déjà enregistré.")
+    hdrs = {'Authorization': f'Bearer {creds.token}', 'Content-Type': 'application/json'}
+    url  = f"{MERCHANT_ACCOUNTS_BASE}/accounts/{MERCHANT_ID}/developerRegistration:registerGcp"
+    resp = requests.post(url, headers=hdrs, json={'developerEmail': DEVELOPER_EMAIL}, timeout=15)
+    if resp.status_code in (200, 409):
+        log.info("✅ Projet GCP enregistré.")
     else:
         log.warning(f"⚠️ Enregistrement GCP : {resp.status_code} — {resp.text[:300]}")
 
 
+# ─── 1. LENGOW ──────────────────────────────────────────────
 def build_gtin_index():
-    """Lit le flux Lengow Google Merchant (séparateur |) et construit les index."""
+    """Index GTIN → offer_id et GTIN → ads_grouping depuis le flux Lengow (séparateur |)."""
     log.info(f"Lecture flux Lengow : {LENGOW_URL}")
-    response = requests.get(LENGOW_URL, stream=True, timeout=300)
-    response.raise_for_status()
+    reader = stream_csv(LENGOW_URL, '|')
 
-    gtin_index        = {}
-    gtin_ads_grouping = {}
-    lengow_rows       = []
-    headers           = None
-    col_indices       = {}
-    idx_offer         = None
-    idx_gtin          = None
-    idx_ads           = None
+    headers = [clean(h) for h in next(reader)]
+    col = {c: headers.index(c) for c in LENGOW_COLS if c in headers}
+    if 'offer_id' not in col or 'product_attributes.gtins_01' not in col:
+        raise ValueError(f"Colonnes offer_id / gtins_01 introuvables dans Lengow : {headers[:10]}…")
 
-    buffer = ''
-    for chunk in response.iter_content(chunk_size=1024 * 1024, decode_unicode=True):
-        buffer += chunk
-        lines   = buffer.split('\n')
-        buffer  = lines[-1]
+    gtin_index, gtin_ads, lengow_rows = {}, {}, []
+    for row in reader:
+        row = [clean(v) for v in row]
+        get = lambda c: row[col[c]] if c in col and col[c] < len(row) else ''
+        offer_id, gtin = get('offer_id'), get('product_attributes.gtins_01')
+        if not (offer_id and gtin):
+            continue
+        gtin_index[gtin] = normalize_id(offer_id)
+        gtin_ads[gtin]   = get('product_attributes.ads_grouping')
+        if GENERATE_LEGACY_LOCAL_FILES:
+            lengow_rows.append({c: get(c) for c in col})
 
-        for line in lines[:-1]:
-            line = line.strip()
-            if not line:
-                continue
-
-            row = next(csv.reader([line], delimiter='|'))
-
-            if headers is None:
-                headers = [h.strip().strip("'\"") for h in row]
-                for lengow_col in LENGOW_COLS:
-                    if lengow_col in headers:
-                        col_indices[lengow_col] = headers.index(lengow_col)
-                idx_offer = col_indices.get('offer_id', 0)
-                idx_gtin  = col_indices.get('product_attributes.gtins_01')
-                idx_ads   = col_indices.get('product_attributes.ads_grouping')
-                log.info(f"Lengow — colonnes : {len(headers)} | offer_id: {idx_offer} | gtin: {idx_gtin} | ads_grouping: {idx_ads}")
-                continue
-
-            if idx_gtin is None:
-                continue
-
-            row_clean = [v.strip().strip("'\"") for v in row]
-            offer_id  = row_clean[idx_offer] if idx_offer < len(row_clean) else ''
-            gtin      = row_clean[idx_gtin]  if idx_gtin  < len(row_clean) else ''
-            ads_group = row_clean[idx_ads]   if idx_ads and idx_ads < len(row_clean) else ''
-
-            if gtin and offer_id:
-                gtin_index[gtin]        = offer_id.lower()
-                gtin_ads_grouping[gtin] = ads_group
-                lengow_rows.append(row_clean)
-
-    if buffer.strip() and headers and idx_gtin is not None:
-        row = next(csv.reader([buffer.strip()], delimiter='|'))
-        row_clean = [v.strip().strip("'\"") for v in row]
-        if len(row_clean) > max(idx_offer, idx_gtin):
-            offer_id  = row_clean[idx_offer]
-            gtin      = row_clean[idx_gtin]
-            ads_group = row_clean[idx_ads] if idx_ads and idx_ads < len(row_clean) else ''
-            if gtin and offer_id:
-                gtin_index[gtin]        = offer_id.lower()
-                gtin_ads_grouping[gtin] = ads_group
-                lengow_rows.append(row_clean)
-
-    log.info(f"Index GTIN → offer_id : {len(gtin_index)} entrées | {len(lengow_rows)} lignes Lengow")
-    return gtin_index, lengow_rows, col_indices, gtin_ads_grouping
+    log.info(f"Index GTIN → offer_id : {len(gtin_index)} entrées")
+    return gtin_index, gtin_ads, lengow_rows
 
 
-def generate_local_flux(lengow_rows, col_indices):
-    """Génère le CSV plat pour la source principale locale GMC."""
-    log.info(f"Génération flux local GMC : {len(lengow_rows)} produits...")
-    os.makedirs(os.path.dirname(LOCAL_FLUX_PATH), exist_ok=True)
+# ─── 2. STOCKS ──────────────────────────────────────────────
+def stream_and_filter(gtin_index, gtin_ads):
+    """Garde les lignes in_stock, quantité > 0, boutique valide, GTIN connu de Lengow.
+    Prix et dates promo de l'export sont ignorés (expirés / inversés ; le prix vient de Lengow)."""
+    log.info(f"Lecture stocks en streaming : {STOCKS_URL}")
+    reader = stream_csv(STOCKS_URL, ';')
 
-    def get(row, col):
-        idx = col_indices.get(col)
-        if idx is None or idx >= len(row):
-            return ''
-        return row[idx]
+    headers = [clean(h) for h in next(reader)]
+    i_id, i_store, i_avail = headers.index('id'), headers.index('store_code'), headers.index('availability')
+    i_qty = headers.index('quantity') if 'quantity' in headers else None
 
-    with open(LOCAL_FLUX_PATH, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow(LOCAL_FLUX_HEADERS)
+    products = {}   # clé (store_code, offer_id) → dédoublonnage
+    stats = {'lues': 0, 'hors_stock': 0, 'boutique_exclue': 0, 'sans_match': 0, 'qte_nulle': 0}
+    excluded_stores = {}
 
-        for row in lengow_rows:
-            price_raw = get(row, 'product_attributes.price.amount_micros')
-            currency  = get(row, 'product_attributes.price.currency_code') or 'EUR'
-            price_str = f"{price_raw} {currency}" if price_raw else ''
+    for row in reader:
+        stats['lues'] += 1
+        get = lambda i: clean(row[i]) if i is not None and i < len(row) else ''
 
-            writer.writerow([
-                get(row, 'offer_id').lower(),
-                get(row, 'product_attributes.title'),
-                price_str,
-                get(row, 'product_attributes.availability').lower(),
-                get(row, 'product_attributes.image_link'),
-                get(row, 'product_attributes.link'),
-                get(row, 'product_attributes.gtins_01'),
-                get(row, 'product_attributes.brand'),
-                get(row, 'product_attributes.condition').lower() or 'new',
-                get(row, 'product_attributes.mpn'),
-                get(row, 'product_attributes.description'),
-                get(row, 'product_attributes.color'),
-                get(row, 'product_attributes.size'),
-                get(row, 'product_attributes.gender').lower(),
-                get(row, 'product_attributes.item_group_id'),
-            ])
+        if get(i_avail) != 'in_stock':
+            stats['hors_stock'] += 1
+            continue
 
-    log.info(f"✅ Flux local généré : {LOCAL_FLUX_PATH}")
+        raw_store = get(i_store)
+        store = resolve_store(raw_store)
+        if not store:
+            stats['boutique_exclue'] += 1
+            if raw_store != 'NONE':
+                excluded_stores[raw_store] = excluded_stores.get(raw_store, 0) + 1
+            continue
+
+        gtin = get(i_id)
+        offer_id = gtin_index.get(gtin)
+        if not offer_id:
+            stats['sans_match'] += 1
+            continue
+
+        try:
+            qty = int(float(get(i_qty) or 0))
+        except ValueError:
+            qty = 0
+        if qty <= 0:
+            stats['qte_nulle'] += 1
+            continue
+
+        products[(store, offer_id)] = {
+            'store_code':   store,
+            'offer_id':     offer_id,
+            'availability': 'in_stock',
+            'quantity':     qty,
+            'pickup_sla':   PICKUP_SLA_BY_STORE.get(store, DEFAULT_PICKUP_SLA),
+            'ads_grouping': gtin_ads.get(gtin, ''),
+        }
+
+    log.info(f"Stocks — {stats} | lignes retenues : {len(products)}")
+    if excluded_stores:
+        log.warning(f"⚠️ Codes boutique exclus (hors NONE) : {excluded_stores}")
+    return list(products.values())
 
 
+# ─── 3. FICHIERS ────────────────────────────────────────────
 def generate_inventory_file(products):
-    """Génère le fichier d'inventaire magasin pour la source supplémentaire GMC."""
-    log.info(f"Génération fichier inventaire magasin : {len(products)} produits...")
     os.makedirs(os.path.dirname(INVENTORY_PATH), exist_ok=True)
-
     with open(INVENTORY_PATH, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            'store_code', 'id', 'availability', 'price', 'sale_price', 'quantity',
-            'pickup_method', 'pickup_sla',
-        ])
-
+        w = csv.writer(f)
+        w.writerow(INVENTORY_HEADERS)
         for p in products:
-            price_str = f"{p['price_amount']} {p['price_currency']}" if p['price_amount'] else ''
+            w.writerow([p['store_code'], p['offer_id'], p['availability'],
+                        p['quantity'], PICKUP_METHOD, p['pickup_sla']])
+    log.info(f"✅ Inventaire magasin : {INVENTORY_PATH} ({len(products)} lignes)")
 
-            # Vider sale_price si identique au price
-            sale_same = False
-            if p['sale_amount'] and p['price_amount']:
-                try:
-                    sale_same = round(float(p['sale_amount']), 2) == round(float(p['price_amount']), 2)
-                except ValueError:
-                    pass
-            sale_str = '' if sale_same else (f"{p['sale_amount']} {p['sale_currency']}" if p['sale_amount'] else '')
 
-            # custom_label_3 : dates promo si sale_price valide et différent du price
-            promo_dates = ''
-            if not sale_same and p['sale_amount'] and p['sale_date']:
-                promo_dates = p['sale_date'].replace('/', ' / ')
-
-            writer.writerow([
-                p['store_code'],
-                p['offer_id'],
-                p['availability'],
-                price_str,
-                sale_str,
-                p['quantity'],
-                'buy',       # pickup_method
-                'same_day',  # pickup_sla
+def generate_legacy_files(lengow_rows, products):
+    """Fichiers de la source Local FR, conservés pendant la transition uniquement."""
+    os.makedirs(os.path.dirname(LOCAL_FLUX_PATH), exist_ok=True)
+    with open(LOCAL_FLUX_PATH, 'w', newline='', encoding='utf-8') as f:
+        w = csv.writer(f)
+        w.writerow(LOCAL_FLUX_HEADERS)
+        for r in lengow_rows:
+            price = r.get('product_attributes.price.amount_micros', '')
+            cur   = r.get('product_attributes.price.currency_code') or 'EUR'
+            w.writerow([
+                r.get('offer_id', ''),
+                r.get('product_attributes.title', ''),
+                f"{price} {cur}" if price else '',
+                r.get('product_attributes.availability', '').lower(),
+                r.get('product_attributes.image_link', ''),
+                r.get('product_attributes.link', ''),
+                r.get('product_attributes.gtins_01', ''),
+                r.get('product_attributes.brand', ''),
+                r.get('product_attributes.condition', '').lower() or 'new',
+                r.get('product_attributes.mpn', ''),
+                r.get('product_attributes.description', ''),
+                r.get('product_attributes.color', ''),
+                r.get('product_attributes.size', ''),
+                r.get('product_attributes.gender', '').lower(),
+                r.get('product_attributes.item_group_id', ''),
             ])
 
-    log.info(f"✅ Fichier inventaire généré : {INVENTORY_PATH}")
-
-
-def generate_labels_file(products):
-    """Génère le fichier de custom labels pour la source supplémentaire locale GMC."""
-    log.info(f"Génération fichier labels : {len(products)} produits...")
-    os.makedirs(os.path.dirname(LABELS_PATH), exist_ok=True)
-
-    # Dédupliquer par offer_id (un produit peut avoir plusieurs magasins)
     seen = {}
     for p in products:
-        if p['offer_id'] not in seen:
-            seen[p['offer_id']] = p
-
+        seen.setdefault(p['offer_id'], p)
     with open(LABELS_PATH, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow(['id', 'custom_label_0', 'custom_label_1', 'custom_label_2',
-                         'custom_label_3', 'custom_label_4'])
-
+        w = csv.writer(f)
+        w.writerow(['id', 'custom_label_0', 'custom_label_1', 'custom_label_2',
+                    'custom_label_3', 'custom_label_4'])
         for offer_id, p in seen.items():
-            # custom_label_3 : dates promo si sale_price valide et différent du price
-            promo_dates = ''
-            sale_same = False
-            if p['sale_amount'] and p['price_amount']:
-                try:
-                    sale_same = round(float(p['sale_amount']), 2) == round(float(p['price_amount']), 2)
-                except ValueError:
-                    pass
-            if not sale_same and p['sale_amount'] and p['sale_date']:
-                promo_dates = p['sale_date'].replace('/', ' / ')
-
-            writer.writerow([
-                offer_id,
-                'IN_STORE',                 # custom_label_0
-                p['store_code'],            # custom_label_1 — magasin principal
-                str(p['quantity']),         # custom_label_2
-                promo_dates,                # custom_label_3
-                p.get('ads_grouping', ''), # custom_label_4 ex: "Tennis Femme"
-            ])
-
-    log.info(f"✅ Fichier labels généré : {LABELS_PATH} ({len(seen)} produits uniques)")
+            w.writerow([offer_id, 'IN_STORE', p['store_code'], p['quantity'], '', p['ads_grouping']])
+    log.info("✅ Fichiers legacy Local FR générés (transition)")
 
 
-def stream_and_filter(gtin_index, gtin_ads_grouping):
-    """Lit le CSV stocks en streaming et filtre les lignes utiles."""
-    log.info(f"Téléchargement stocks en streaming : {STOCKS_URL}")
-    response = requests.get(STOCKS_URL, stream=True, timeout=300)
-    response.raise_for_status()
-
-    products      = []
-    headers       = None
-    idx_avail     = None
-    idx_store     = None
-    idx_id        = None
-    idx_price     = None
-    idx_sale      = None
-    idx_sale_date = None
-    idx_qty       = None
-    total         = 0
-    no_match      = 0
-
-    buffer = ''
-    for chunk in response.iter_content(chunk_size=1024 * 1024, decode_unicode=True):
-        buffer += chunk
-        lines   = buffer.split('\n')
-        buffer  = lines[-1]
-
-        for line in lines[:-1]:
-            line = line.strip()
-            if not line:
-                continue
-
-            row = next(csv.reader([line], delimiter=';'))
-
-            if headers is None:
-                headers       = [h.strip().strip("'\"") for h in row]
-                idx_avail     = headers.index('availability')
-                idx_store     = headers.index('store_code')
-                idx_id        = headers.index('id')
-                idx_price     = headers.index('price')
-                idx_sale      = headers.index('sale_price') if 'sale_price' in headers else None
-                idx_sale_date = headers.index('sale_price_effective_date') if 'sale_price_effective_date' in headers else None
-                idx_qty       = headers.index('quantity') if 'quantity' in headers else None
-                log.info(f"Colonnes stocks : {headers}")
-                continue
-
-            total += 1
-            avail = row[idx_avail].strip().strip('"') if idx_avail < len(row) else ''
-            store = row[idx_store].strip().strip('"') if idx_store < len(row) else ''
-            gtin  = row[idx_id].strip().strip('"')   if idx_id    < len(row) else ''
-
-            if avail == 'in_stock' and store and store != 'NONE':
-                offer_id = gtin_index.get(gtin, '')
-                if not offer_id:
-                    no_match += 1
-                    continue
-
-                price_raw      = row[idx_price].strip().strip('"') if idx_price < len(row) else ''
-                price_parts    = price_raw.split(' ')
-                price_amount   = price_parts[0] if price_parts else ''
-                price_currency = price_parts[1] if len(price_parts) > 1 else 'EUR'
-
-                sale_amount   = ''
-                sale_currency = 'EUR'
-                sale_date     = ''
-                if idx_sale is not None and idx_sale < len(row):
-                    sale_raw = row[idx_sale].strip().strip('"')
-                    if sale_raw:
-                        sale_parts    = sale_raw.split(' ')
-                        sale_amount   = sale_parts[0]
-                        sale_currency = sale_parts[1] if len(sale_parts) > 1 else 'EUR'
-                if idx_sale_date is not None and idx_sale_date < len(row):
-                    sale_date = row[idx_sale_date].strip().strip('"').replace(' ', '')
-
-                qty = 0
-                if idx_qty is not None and idx_qty < len(row):
-                    try:
-                        qty = int(row[idx_qty].strip().strip('"'))
-                    except ValueError:
-                        qty = 0
-
-                products.append({
-                    'offer_id':       offer_id,
-                    'store_code':     store,
-                    'availability':   avail,
-                    'price_amount':   price_amount,
-                    'price_currency': price_currency,
-                    'sale_amount':    sale_amount,
-                    'sale_currency':  sale_currency,
-                    'sale_date':      sale_date,
-                    'quantity':       qty,
-                    'ads_grouping':   gtin_ads_grouping.get(gtin, ''),
-                })
-
-    log.info(f"Lignes lues : {total} | Produits valides : {len(products)} | Sans match GTIN : {no_match}")
-    return products
-
-
-def build_product_name(offer_id):
-    return f"accounts/{MERCHANT_ID}/products/local~fr~FR~{offer_id}"
-
-
+# ─── 4. PUSH API (optionnel) ────────────────────────────────
 def push_single_product(args):
-    """Push inventaire pour un seul produit — appelé en parallèle."""
     p, token = args
-    hdrs = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-    url  = f"{MERCHANT_API_BASE}/{build_product_name(p['offer_id'])}/localInventories:insert"
-
-    local_attrs = {
-        'availability': p['availability'].upper().replace(' ', '_'),
-        'quantity':     p['quantity'],
-    }
-
-    if p['price_amount']:
-        try:
-            local_attrs['price'] = {
-                'amountMicros': str(int(float(p['price_amount']) * 1_000_000)),
-                'currencyCode': p['price_currency'],
-            }
-        except ValueError:
-            pass
-
-    # Sale price uniquement si différent du price
-    sale_same = False
-    if p['sale_amount'] and p['price_amount']:
-        try:
-            sale_same = round(float(p['sale_amount']), 2) == round(float(p['price_amount']), 2)
-        except ValueError:
-            pass
-
-    if p['sale_amount'] and not sale_same:
-        try:
-            local_attrs['salePrice'] = {
-                'amountMicros': str(int(float(p['sale_amount']) * 1_000_000)),
-                'currencyCode': p['sale_currency'],
-            }
-        except ValueError:
-            pass
-
-    if p['sale_date'] and not sale_same:
-        date_parts = p['sale_date'].split('/')
-        if len(date_parts) == 2:
-            local_attrs['salePriceEffectiveDate'] = {
-                'startTime': date_parts[0],
-                'endTime':   date_parts[1],
-            }
-
+    name = f"accounts/{MERCHANT_ID}/products/{PRODUCT_NAME_TEMPLATE.format(offer_id=p['offer_id'])}"
+    url  = f"{MERCHANT_API_BASE}/{name}/localInventories:insert"
     body = {
-        'storeCode':                p['store_code'],
-        'localInventoryAttributes': local_attrs,
+        'storeCode': p['store_code'],
+        'localInventoryAttributes': {
+            'availability': 'IN_STOCK',
+            'quantity':     str(p['quantity']),
+            'pickupMethod': PICKUP_METHOD.upper(),
+            'pickupSla':    p['pickup_sla'].upper(),
+        },
     }
-
+    hdrs = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
     for attempt in range(2):
         try:
             resp = requests.post(url, headers=hdrs, json=body, timeout=15)
             if resp.status_code == 200:
                 return {'product': p['offer_id'], 'ok': True}
-            else:
-                if attempt == 0:
-                    time.sleep(1)
-                    continue
-                return {'product': p['offer_id'], 'ok': False, 'status': resp.status_code, 'error': resp.text[:300]}
+            err = {'product': p['offer_id'], 'ok': False, 'status': resp.status_code, 'error': resp.text[:300]}
         except Exception as e:
-            if attempt == 0:
-                time.sleep(1)
-                continue
-            return {'product': p['offer_id'], 'ok': False, 'error': str(e)}
-
-    return {'product': p['offer_id'], 'ok': False, 'error': 'Max retries exceeded'}
+            err = {'product': p['offer_id'], 'ok': False, 'error': str(e)}
+        if attempt == 0:
+            time.sleep(1)
+    return err
 
 
 def push_local_inventory(creds, products):
-    """Push inventaire local en parallèle via ThreadPoolExecutor."""
-    log.info(f"Push inventaire local pour {len(products)} produits ({MAX_WORKERS} threads parallèles)...")
-
+    log.info(f"Push API pour {len(products)} lignes ({MAX_WORKERS} threads)...")
     creds.refresh(Request())
-    token   = creds.token
-    success = 0
-    errors  = []
-    done    = 0
-
-    args = [(p, token) for p in products]
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(push_single_product, arg): arg[0] for arg in args}
-
-        for future in as_completed(futures):
-            result = future.result()
-            done  += 1
-
-            if result.get('ok'):
+    success, errors = 0, []
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = [ex.submit(push_single_product, (p, creds.token)) for p in products]
+        for n, fut in enumerate(as_completed(futures), 1):
+            res = fut.result()
+            if res.get('ok'):
                 success += 1
             else:
-                errors.append(result)
-
-            if done % 50 == 0:
-                log.info(f"  Progression : {done}/{len(products)} — {success} OK / {len(errors)} erreurs")
-                if errors:
-                    log.error(f"  Dernière erreur : {errors[-1]}")
-
+                errors.append(res)
+            if n % 200 == 0:
+                log.info(f"  {n}/{len(products)} — {success} OK / {len(errors)} erreurs")
     log.info(f"Push terminé — {success} OK / {len(errors)} erreurs")
+    for e in errors[:10]:
+        log.error(f"  {e.get('product')} [{e.get('status', '')}] : {e.get('error', '')[:200]}")
     return success, errors
 
 
+# ─── 5. SHEET ───────────────────────────────────────────────
 def write_to_sheet(sheets, products):
-    log.info(f"Écriture dans Sheet — onglet {TAB_NAME}...")
-
-    headers_row = ['id', 'store_code', 'availability', 'price', 'sale_price', 'quantity', 'ads_grouping']
-    rows = [headers_row]
-    for p in products:
-        rows.append([
-            p['offer_id'],
-            p['store_code'],
-            p['availability'],
-            f"{p['price_amount']} {p['price_currency']}",
-            f"{p['sale_amount']} {p['sale_currency']}" if p['sale_amount'] else '',
-            p['quantity'],
-            p.get('ads_grouping', ''),
-        ])
-
+    rows = [['id', 'store_code', 'availability', 'quantity', 'pickup_sla', 'ads_grouping']]
+    rows += [[p['offer_id'], p['store_code'], p['availability'], p['quantity'],
+              p['pickup_sla'], p['ads_grouping']] for p in products]
     for attempt in range(3):
         try:
-            sheets.spreadsheets().values().clear(
-                spreadsheetId=SHEET_ID,
-                range=TAB_NAME,
-            ).execute()
+            sheets.spreadsheets().values().clear(spreadsheetId=SHEET_ID, range=TAB_NAME).execute()
             sheets.spreadsheets().values().update(
-                spreadsheetId=SHEET_ID,
-                range=f"{TAB_NAME}!A1",
-                valueInputOption='RAW',
-                body={'values': rows},
+                spreadsheetId=SHEET_ID, range=f"{TAB_NAME}!A1",
+                valueInputOption='RAW', body={'values': rows},
             ).execute()
-            log.info(f"✅ Sheet mis à jour : {len(products)} produits")
-            break
+            log.info(f"✅ Sheet mis à jour : {len(products)} lignes")
+            return
         except Exception as e:
             if attempt < 2:
-                log.warning(f"Sheets indisponible, retry {attempt + 1}/3 dans 15s... ({e})")
+                log.warning(f"Sheets indisponible, retry {attempt + 1}/3 dans 15s ({e})")
                 time.sleep(15)
             else:
                 log.error(f"Sheets erreur après 3 tentatives : {e}")
 
 
+# ─── MAIN ───────────────────────────────────────────────────
 def main():
     creds  = get_credentials()
-    sheets = get_sheets_service(creds)
-
+    sheets = build('sheets', 'v4', credentials=creds)
     register_gcp_project(creds)
 
-    gtin_index, lengow_rows, col_indices, gtin_ads_grouping = build_gtin_index()
-
-    generate_local_flux(lengow_rows, col_indices)
-
-    products = stream_and_filter(gtin_index, gtin_ads_grouping)
-
+    gtin_index, gtin_ads, lengow_rows = build_gtin_index()
+    products = stream_and_filter(gtin_index, gtin_ads)
     if not products:
-        log.warning("Aucun produit valide trouvé.")
+        log.warning("Aucune ligne valide : fichiers non écrasés.")
         return
 
     generate_inventory_file(products)
-    generate_labels_file(products)
+    if GENERATE_LEGACY_LOCAL_FILES:
+        generate_legacy_files(lengow_rows, products)
     write_to_sheet(sheets, products)
 
-    success, errors = push_local_inventory(creds, products)
-
-    log.info(f"\n=== RÉSULTAT FINAL ===")
-    log.info(f"✅ Succès  : {success}")
-    log.info(f"❌ Erreurs : {len(errors)}")
-    if errors:
-        for e in errors[:10]:
-            log.error(f"  {e.get('product')} [{e.get('status', '')}] : {e.get('error', '')[:200]}")
+    if ENABLE_API_PUSH:
+        push_local_inventory(creds, products)
+    else:
+        log.info("Push API désactivé : l'inventaire passe par le fichier inventaire_magasin.csv")
 
 
 if __name__ == '__main__':
