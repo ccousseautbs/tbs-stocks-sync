@@ -45,6 +45,6 @@ jobs:
 
       - name: Keepalive
         if: always()
-        run: gh api -X PUT repos/${{ github.repository }}/actions/workflows/stocks-sync.yml/enable
+        run: gh workflow enable "${{ github.workflow }}" --repo ${{ github.repository }}
         env:
           GH_TOKEN: ${{ github.token }}
