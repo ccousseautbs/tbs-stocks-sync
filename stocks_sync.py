@@ -3,7 +3,7 @@ STOCKS SYNC TBS — Script Python (version fusion Lengow FR)
 
 1. Enregistre le projet GCP auprès de la Merchant API
 2. Lit le flux Lengow Google Merchant → index GTIN → offer_id (+ ads_grouping)
-3. Lit le flux stocks en streaming → garde in_stock + quantité > 0 + vraie boutique
+3. Lit le flux stocks en streaming → garde in_stock + quantité > 0 + boutique renseignée (hors NONE)
 4. Génère inventaire_magasin.csv (sans prix : le prix vient du flux principal Lengow FR)
 5. (Optionnel) Pousse l'inventaire via Merchant Inventories API v1
 6. Écrit le résultat dans Google Sheets
@@ -14,11 +14,9 @@ labels_local_gmc.csv. Passer à False une fois Local FR supprimée.
 """
 
 import csv
-import io
 import json
 import logging
 import os
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -55,13 +53,6 @@ LOWERCASE_OFFER_IDS         = False  # garder la casse exacte des offer_id Lengo
 
 # Nom de produit Merchant API ciblé par le push (contentLanguage~feedLabel~offerId)
 PRODUCT_NAME_TEMPLATE = 'fr~FR~{offer_id}'
-
-# Boutiques
-VALID_STORE_RE = re.compile(r'^\d{5}_.+TBS$')   # ex. 03902_ANGERS_TBS, 08210_ST-GILLES-TBS
-STORE_CODE_MAP = {
-    # code reçu dans l'export → code magasin GMC correct ('' = ligne exclue)
-    '16134378928582518495': '',   # ⚠️ à renseigner avec le bon code boutique
-}
 
 # Retrait du stock boutique (surcharge le défaut ship_to_store de Lengow FR)
 PICKUP_METHOD        = 'buy'
@@ -106,24 +97,31 @@ def clean(value):
 
 
 def stream_csv(url, delimiter):
-    """Lit un CSV distant en streaming. csv gère les retours à la ligne entre guillemets."""
-    resp = requests.get(url, stream=True, timeout=300)
-    resp.raise_for_status()
-    resp.raw.decode_content = True
-    text = io.TextIOWrapper(resp.raw, encoding='utf-8-sig', errors='replace', newline='')
-    return csv.reader(text, delimiter=delimiter)
+    """Lit un CSV distant en streaming, ligne par ligne.
+    Générateur : la réponse HTTP reste ouverte tant que les lignes sont consommées.
+    csv gère les retours à la ligne entre guillemets."""
+    with requests.get(url, stream=True, timeout=300) as resp:
+        resp.raise_for_status()
+        resp.encoding = 'utf-8'   # évite le repli ISO-8859-1 de requests
+
+        def lines():
+            buf, first = '', True
+            for chunk in resp.iter_content(chunk_size=1024 * 1024, decode_unicode=True):
+                if first:
+                    chunk, first = chunk.lstrip('\ufeff'), False
+                buf += chunk
+                parts = buf.split('\n')
+                buf = parts.pop()
+                for part in parts:
+                    yield part + '\n'   # csv recolle les lignes coupées entre guillemets
+            if buf:
+                yield buf
+
+        yield from csv.reader(lines(), delimiter=delimiter)
 
 
 def normalize_id(offer_id):
     return offer_id.lower() if LOWERCASE_OFFER_IDS else offer_id
-
-
-def resolve_store(raw_store):
-    """Retourne le code boutique valide, ou '' si la ligne doit être exclue."""
-    store = STORE_CODE_MAP.get(raw_store, raw_store)
-    if not store or store == 'NONE':
-        return ''
-    return store if VALID_STORE_RE.match(store) else ''
 
 
 # ─── AUTH ───────────────────────────────────────────────────
@@ -175,7 +173,7 @@ def build_gtin_index():
 
 # ─── 2. STOCKS ──────────────────────────────────────────────
 def stream_and_filter(gtin_index, gtin_ads):
-    """Garde les lignes in_stock, quantité > 0, boutique valide, GTIN connu de Lengow.
+    """Garde les lignes in_stock, quantité > 0, boutique renseignée (hors NONE), GTIN connu de Lengow.
     Prix et dates promo de l'export sont ignorés (expirés / inversés ; le prix vient de Lengow)."""
     log.info(f"Lecture stocks en streaming : {STOCKS_URL}")
     reader = stream_csv(STOCKS_URL, ';')
@@ -186,7 +184,6 @@ def stream_and_filter(gtin_index, gtin_ads):
 
     products = {}   # clé (store_code, offer_id) → dédoublonnage
     stats = {'lues': 0, 'hors_stock': 0, 'boutique_exclue': 0, 'sans_match': 0, 'qte_nulle': 0}
-    excluded_stores = {}
 
     for row in reader:
         stats['lues'] += 1
@@ -196,12 +193,9 @@ def stream_and_filter(gtin_index, gtin_ads):
             stats['hors_stock'] += 1
             continue
 
-        raw_store = get(i_store)
-        store = resolve_store(raw_store)
-        if not store:
+        store = get(i_store)
+        if not store or store == 'NONE':
             stats['boutique_exclue'] += 1
-            if raw_store != 'NONE':
-                excluded_stores[raw_store] = excluded_stores.get(raw_store, 0) + 1
             continue
 
         gtin = get(i_id)
@@ -228,8 +222,6 @@ def stream_and_filter(gtin_index, gtin_ads):
         }
 
     log.info(f"Stocks — {stats} | lignes retenues : {len(products)}")
-    if excluded_stores:
-        log.warning(f"⚠️ Codes boutique exclus (hors NONE) : {excluded_stores}")
     return list(products.values())
 
 
