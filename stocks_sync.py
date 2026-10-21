@@ -47,7 +47,7 @@ MERCHANT_ACCOUNTS_BASE = 'https://merchantapi.googleapis.com/accounts/v1'
 MAX_WORKERS            = 10
 
 # Interrupteurs
-GENERATE_LEGACY_LOCAL_FILES = True   # False une fois Local FR supprimée dans GMC
+GENERATE_LEGACY_LOCAL_FILES = False  # False une fois Local FR supprimée dans GMC
 ENABLE_API_PUSH             = False  # True seulement si l'inventaire passe par l'API et non par le fichier
 LOWERCASE_OFFER_IDS         = False  # garder la casse exacte des offer_id Lengow FR
 
