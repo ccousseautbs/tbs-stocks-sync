@@ -173,8 +173,11 @@ def build_gtin_index():
 
 # ─── 2. STOCKS ──────────────────────────────────────────────
 def stream_and_filter(gtin_index, gtin_ads):
-    """Garde les lignes in_stock, quantité > 0, boutique renseignée (hors NONE), GTIN connu de Lengow.
-    Prix et dates promo de l'export sont ignorés (expirés / inversés ; le prix vient de Lengow)."""
+    """L'export stock est un historique : chaque couple EAN × boutique y apparaît plusieurs fois,
+    dans l'ordre chronologique. Seule la DERNIÈRE ligne reflète l'état actuel.
+    On garde donc la dernière ligne par (boutique, EAN), puis on filtre :
+    in_stock, quantité > 0, boutique renseignée (hors NONE), GTIN connu de Lengow.
+    Prix et dates promo de l'export sont ignorés (le prix vient de Lengow)."""
     log.info(f"Lecture stocks en streaming : {STOCKS_URL}")
     reader = stream_csv(STOCKS_URL, ';')
 
@@ -182,47 +185,43 @@ def stream_and_filter(gtin_index, gtin_ads):
     i_id, i_store, i_avail = headers.index('id'), headers.index('store_code'), headers.index('availability')
     i_qty = headers.index('quantity') if 'quantity' in headers else None
 
-    products = {}   # clé (store_code, offer_id) → dédoublonnage
-    stats = {'lues': 0, 'hors_stock': 0, 'boutique_exclue': 0, 'sans_match': 0, 'qte_nulle': 0}
-
+    latest = {}   # (store, gtin) → (availability, quantity) de la dernière ligne lue
+    lues = 0
     for row in reader:
-        stats['lues'] += 1
-        get = lambda i: clean(row[i]) if i is not None and i < len(row) else ''
+        lues += 1
+        if i_store >= len(row) or i_id >= len(row):
+            continue
+        store = clean(row[i_store])
+        if not store or store == 'NONE':
+            continue
+        avail = clean(row[i_avail]) if i_avail < len(row) else ''
+        try:
+            qty = int(float(clean(row[i_qty]) or 0)) if i_qty is not None and i_qty < len(row) else 0
+        except ValueError:
+            qty = 0
+        latest[(store, clean(row[i_id]))] = (avail, qty)   # écrase : la dernière ligne gagne
 
-        if get(i_avail) != 'in_stock':
+    stats = {'lues': lues, 'couples_boutique_ean': len(latest), 'hors_stock': 0, 'sans_match': 0}
+    products = []
+    for (store, gtin), (avail, qty) in latest.items():
+        if avail != 'in_stock' or qty <= 0:
             stats['hors_stock'] += 1
             continue
-
-        store = get(i_store)
-        if not store or store == 'NONE':
-            stats['boutique_exclue'] += 1
-            continue
-
-        gtin = get(i_id)
         offer_id = gtin_index.get(gtin)
         if not offer_id:
             stats['sans_match'] += 1
             continue
-
-        try:
-            qty = int(float(get(i_qty) or 0))
-        except ValueError:
-            qty = 0
-        if qty <= 0:
-            stats['qte_nulle'] += 1
-            continue
-
-        products[(store, offer_id)] = {
+        products.append({
             'store_code':   store,
             'offer_id':     offer_id,
             'availability': 'in_stock',
             'quantity':     qty,
             'pickup_sla':   PICKUP_SLA_BY_STORE.get(store, DEFAULT_PICKUP_SLA),
             'ads_grouping': gtin_ads.get(gtin, ''),
-        }
+        })
 
     log.info(f"Stocks — {stats} | lignes retenues : {len(products)}")
-    return list(products.values())
+    return products
 
 
 # ─── 3. FICHIERS ────────────────────────────────────────────
