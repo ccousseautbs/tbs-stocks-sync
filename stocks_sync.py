@@ -38,6 +38,7 @@ TAB_NAME        = 'Stocks'
 INVENTORY_PATH  = 'docs/inventaire_magasin.csv'
 LOCAL_FLUX_PATH = 'docs/flux_local_gmc.csv'    # legacy (source Local FR)
 LABELS_PATH     = 'docs/labels_local_gmc.csv'  # legacy (source Local FR)
+EXCLUSIONS_PATH = 'docs/exclusions_locales_gmc.csv'  # source supplémentaire rattachée à FR
 SCOPES = [
     'https://www.googleapis.com/auth/content',
     'https://www.googleapis.com/auth/spreadsheets',
@@ -48,6 +49,8 @@ MAX_WORKERS            = 10
 
 # Interrupteurs
 GENERATE_LEGACY_LOCAL_FILES = False  # False une fois Local FR supprimée dans GMC
+GENERATE_LOCAL_EXCLUSIONS   = True   # exclut des destinations locales les produits sans stock boutique
+LOCAL_DESTINATIONS          = 'Local_inventory_ads,Free_local_listings'
 ENABLE_API_PUSH             = False  # True seulement si l'inventaire passe par l'API et non par le fichier
 LOWERCASE_OFFER_IDS         = False  # garder la casse exacte des offer_id Lengow FR
 
@@ -155,11 +158,13 @@ def build_gtin_index():
     if 'offer_id' not in col or 'product_attributes.gtins_01' not in col:
         raise ValueError(f"Colonnes offer_id / gtins_01 introuvables dans Lengow : {headers[:10]}…")
 
-    gtin_index, gtin_ads, lengow_rows = {}, {}, []
+    gtin_index, gtin_ads, lengow_rows, all_offer_ids = {}, {}, [], set()
     for row in reader:
         row = [clean(v) for v in row]
         get = lambda c: row[col[c]] if c in col and col[c] < len(row) else ''
         offer_id, gtin = get('offer_id'), get('product_attributes.gtins_01')
+        if offer_id:
+            all_offer_ids.add(normalize_id(offer_id))
         if not (offer_id and gtin):
             continue
         gtin_index[gtin] = normalize_id(offer_id)
@@ -167,8 +172,8 @@ def build_gtin_index():
         if GENERATE_LEGACY_LOCAL_FILES:
             lengow_rows.append({c: get(c) for c in col})
 
-    log.info(f"Index GTIN → offer_id : {len(gtin_index)} entrées")
-    return gtin_index, gtin_ads, lengow_rows
+    log.info(f"Index GTIN → offer_id : {len(gtin_index)} entrées | offres Lengow : {len(all_offer_ids)}")
+    return gtin_index, gtin_ads, lengow_rows, all_offer_ids
 
 
 # ─── 2. STOCKS ──────────────────────────────────────────────
@@ -234,6 +239,22 @@ def generate_inventory_file(products):
             w.writerow([p['store_code'], p['offer_id'], p['availability'],
                         p['quantity'], PICKUP_METHOD, p['pickup_sla']])
     log.info(f"✅ Inventaire magasin : {INVENTORY_PATH} ({len(products)} lignes)")
+
+
+def generate_local_exclusions(all_offer_ids, products):
+    """Source supplémentaire GMC (libellé FR) : exclut des destinations locales
+    toutes les offres Lengow sans stock dans aucune boutique.
+    Un produit qui revient en stock boutique sort du fichier et redevient éligible au local."""
+    in_store = {p['offer_id'] for p in products}
+    excluded = sorted(all_offer_ids - in_store)
+    os.makedirs(os.path.dirname(EXCLUSIONS_PATH), exist_ok=True)
+    with open(EXCLUSIONS_PATH, 'w', newline='', encoding='utf-8') as f:
+        w = csv.writer(f)
+        w.writerow(['id', 'excluded_destination'])
+        for offer_id in excluded:
+            w.writerow([offer_id, LOCAL_DESTINATIONS])
+    log.info(f"✅ Exclusions locales : {EXCLUSIONS_PATH} ({len(excluded)} produits exclus | "
+             f"{len(in_store)} produits avec stock boutique)")
 
 
 def generate_legacy_files(lengow_rows, products):
@@ -351,13 +372,15 @@ def main():
     sheets = build('sheets', 'v4', credentials=creds)
     register_gcp_project(creds)
 
-    gtin_index, gtin_ads, lengow_rows = build_gtin_index()
+    gtin_index, gtin_ads, lengow_rows, all_offer_ids = build_gtin_index()
     products = stream_and_filter(gtin_index, gtin_ads)
     if not products:
         log.warning("Aucune ligne valide : fichiers non écrasés.")
         return
 
     generate_inventory_file(products)
+    if GENERATE_LOCAL_EXCLUSIONS:
+        generate_local_exclusions(all_offer_ids, products)
     if GENERATE_LEGACY_LOCAL_FILES:
         generate_legacy_files(lengow_rows, products)
     write_to_sheet(sheets, products)
