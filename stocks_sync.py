@@ -50,7 +50,7 @@ MAX_WORKERS            = 10
 # Interrupteurs
 GENERATE_LEGACY_LOCAL_FILES = False  # False une fois Local FR supprimée dans GMC
 GENERATE_LOCAL_EXCLUSIONS   = True   # exclut des destinations locales les produits sans stock boutique
-LOCAL_DESTINATIONS          = 'Local_inventory_ads,Free_local_listings'
+LOCAL_DESTINATIONS          = 'free_local_listings,local_inventory_ads'
 ENABLE_API_PUSH             = False  # True seulement si l'inventaire passe par l'API et non par le fichier
 LOWERCASE_OFFER_IDS         = False  # garder la casse exacte des offer_id Lengow FR
 
