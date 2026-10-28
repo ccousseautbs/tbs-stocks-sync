@@ -50,7 +50,7 @@ MAX_WORKERS            = 10
 # Interrupteurs
 GENERATE_LEGACY_LOCAL_FILES = False  # False une fois Local FR supprimée dans GMC
 GENERATE_LOCAL_EXCLUSIONS   = True   # exclut des destinations locales les produits sans stock boutique
-LOCAL_DESTINATIONS          = 'free_local_listings,local_inventory_ads'
+LOCAL_DESTINATIONS          = ['free_local_listings', 'local_inventory_ads']  # une colonne par valeur
 ENABLE_API_PUSH             = False  # True seulement si l'inventaire passe par l'API et non par le fichier
 LOWERCASE_OFFER_IDS         = False  # garder la casse exacte des offer_id Lengow FR
 
@@ -250,9 +250,11 @@ def generate_local_exclusions(all_offer_ids, products):
     os.makedirs(os.path.dirname(EXCLUSIONS_PATH), exist_ok=True)
     with open(EXCLUSIONS_PATH, 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
-        w.writerow(['id', 'excluded_destination'])
+        # Attribut répété : une colonne excluded_destination par destination,
+        # sinon GMC lit 'a,b' comme une seule valeur (non reconnue)
+        w.writerow(['id'] + ['excluded_destination'] * len(LOCAL_DESTINATIONS))
         for offer_id in excluded:
-            w.writerow([offer_id, LOCAL_DESTINATIONS])
+            w.writerow([offer_id] + LOCAL_DESTINATIONS)
     log.info(f"✅ Exclusions locales : {EXCLUSIONS_PATH} ({len(excluded)} produits exclus | "
              f"{len(in_store)} produits avec stock boutique)")
 
