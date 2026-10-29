@@ -50,7 +50,9 @@ MAX_WORKERS            = 10
 # Interrupteurs
 GENERATE_LEGACY_LOCAL_FILES = False  # False une fois Local FR supprimée dans GMC
 GENERATE_LOCAL_EXCLUSIONS   = True   # exclut des destinations locales les produits sans stock boutique
-LOCAL_DESTINATIONS          = ['free_local_listings', 'local_inventory_ads']  # une colonne par valeur
+LOCAL_DESTINATIONS          = ['free_local_listings', 'local_inventory_ads']
+ONLINE_DESTINATIONS         = ['shopping_ads', 'free_listings', 'display_ads']
+EXCLUDE_OUT_OF_STOCK_EVERYWHERE = True   # rupture web + aucune boutique → exclu de toutes les destinations
 ENABLE_API_PUSH             = False  # True seulement si l'inventaire passe par l'API et non par le fichier
 LOWERCASE_OFFER_IDS         = False  # garder la casse exacte des offer_id Lengow FR
 
@@ -158,13 +160,14 @@ def build_gtin_index():
     if 'offer_id' not in col or 'product_attributes.gtins_01' not in col:
         raise ValueError(f"Colonnes offer_id / gtins_01 introuvables dans Lengow : {headers[:10]}…")
 
-    gtin_index, gtin_ads, lengow_rows, all_offer_ids = {}, {}, [], set()
+    gtin_index, gtin_ads, lengow_rows, all_offer_ids = {}, {}, [], {}
     for row in reader:
         row = [clean(v) for v in row]
         get = lambda c: row[col[c]] if c in col and col[c] < len(row) else ''
         offer_id, gtin = get('offer_id'), get('product_attributes.gtins_01')
         if offer_id:
-            all_offer_ids.add(normalize_id(offer_id))
+            avail = get('product_attributes.availability').lower().replace(' ', '_')
+            all_offer_ids[normalize_id(offer_id)] = avail   # offer_id → disponibilité web
         if not (offer_id and gtin):
             continue
         gtin_index[gtin] = normalize_id(offer_id)
@@ -242,21 +245,30 @@ def generate_inventory_file(products):
 
 
 def generate_local_exclusions(all_offer_ids, products):
-    """Source supplémentaire GMC (libellé FR) : exclut des destinations locales
-    toutes les offres Lengow sans stock dans aucune boutique.
-    Un produit qui revient en stock boutique sort du fichier et redevient éligible au local."""
+    """Source supplémentaire GMC (libellé FR), recalculée chaque nuit :
+    - stock en boutique                  → aucune exclusion
+    - aucune boutique, en stock web      → exclu des destinations locales
+    - aucune boutique, rupture web       → exclu de toutes les destinations
+      (si EXCLUDE_OUT_OF_STOCK_EVERYWHERE), pour sortir ces SKU des diagnostics
+    Un produit qui revient en stock sort du fichier à la génération suivante."""
     in_store = {p['offer_id'] for p in products}
-    excluded = sorted(all_offer_ids - in_store)
+    all_dest = ONLINE_DESTINATIONS + LOCAL_DESTINATIONS
+    n_local, n_all = 0, 0
     os.makedirs(os.path.dirname(EXCLUSIONS_PATH), exist_ok=True)
     with open(EXCLUSIONS_PATH, 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
-        # Attribut répété : une colonne excluded_destination par destination,
-        # sinon GMC lit 'a,b' comme une seule valeur (non reconnue)
-        w.writerow(['id'] + ['excluded_destination'] * len(LOCAL_DESTINATIONS))
-        for offer_id in excluded:
-            w.writerow([offer_id] + LOCAL_DESTINATIONS)
-    log.info(f"✅ Exclusions locales : {EXCLUSIONS_PATH} ({len(excluded)} produits exclus | "
-             f"{len(in_store)} produits avec stock boutique)")
+        # Attribut répété : une colonne excluded_destination par valeur (largeur fixe)
+        w.writerow(['id'] + ['excluded_destination'] * len(all_dest))
+        for offer_id in sorted(all_offer_ids):
+            if offer_id in in_store:
+                continue
+            if EXCLUDE_OUT_OF_STOCK_EVERYWHERE and all_offer_ids[offer_id] == 'out_of_stock':
+                values, n_all = all_dest, n_all + 1
+            else:
+                values, n_local = LOCAL_DESTINATIONS, n_local + 1
+            w.writerow([offer_id] + values + [''] * (len(all_dest) - len(values)))
+    log.info(f"✅ Exclusions : {EXCLUSIONS_PATH} | locales seules : {n_local} | "
+             f"toutes destinations (rupture partout) : {n_all} | avec stock boutique : {len(in_store)}")
 
 
 def generate_legacy_files(lengow_rows, products):
