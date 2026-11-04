@@ -29,9 +29,9 @@ REF_QR           = 'data/referentiel_qr.csv'
 # Sans secret GEMINI_API_KEY, les scripts tournent quand même :
 # héritage + règles, et les manques partent dans le rapport « à rédiger ».
 GEMINI_MODELE              = 'gemini-3.8-flash'   # à ajuster selon les modèles disponibles en gratuit
-GEMINI_PAUSE_SECONDES      = 7      # temporisation entre deux appels (niveau gratuit ≈ 10 req/min)
-MAX_APPELS_IA_DESCRIPTIONS = 150    # plafond par nuit, job descriptions (prioritaire)
-MAX_APPELS_IA_QR           = 150    # plafond par nuit, job Q&R
+GEMINI_PAUSE_SECONDES      = 13      # temporisation entre deux appels (niveau gratuit ≈ 10 req/min)
+MAX_APPELS_IA_DESCRIPTIONS = 10    # plafond par nuit, job descriptions (prioritaire)
+MAX_APPELS_IA_QR           = 8    # plafond par nuit, job Q&R
 
 # Q&R générées par IA : publiées automatiquement si les garde-fous passent.
 # Mettre False pour exiger une validation (statut 'valide') dans data/referentiel_qr.csv.
