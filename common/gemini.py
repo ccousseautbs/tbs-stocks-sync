@@ -60,6 +60,11 @@ class Gemini:
                 self.quota_atteint = True
                 log.warning("Quota Gemini atteint : reprise à la prochaine exécution.")
                 raise QuotaAtteint()
+            if resp.status_code in (400, 401, 403, 404):
+                # Erreur de configuration (modèle retiré, clé invalide) : inutile d'insister cette nuit
+                self.quota_atteint = True
+                log.error(f"Gemini {resp.status_code} — génération IA arrêtée pour cette exécution : {resp.text[:300]}")
+                raise QuotaAtteint()
             if resp.status_code != 200:
                 log.warning(f"Gemini {resp.status_code} : {resp.text[:300]}")
                 time.sleep(10)
