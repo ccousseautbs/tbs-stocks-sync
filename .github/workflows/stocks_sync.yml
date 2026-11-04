@@ -1,8 +1,8 @@
-name: Stocks Sync TBS
+name: Flux TBS (stocks, descriptions, conversationnel)
 
 on:
   schedule:
-    - cron: '0 1 * * *'  # 3h du matin heure Paris (1h UTC)
+    - cron: '0 1 * * *'   # 3h du matin heure de Paris (1h UTC)
   workflow_dispatch:
 
 permissions:
@@ -11,38 +11,158 @@ permissions:
   id-token: write
   actions: write
 
+concurrency:
+  group: flux-tbs
+  cancel-in-progress: false
+
 jobs:
-  sync:
+  # ── JOB 1 : lecture unique des flux Lengow ─────────────────
+  lecture-flux:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
+    timeout-minutes: 20
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Télécharger flux canal Google + catalogue
+        run: python fetch_flux.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flux
+          path: cache/
+          retention-days: 2
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run stocks sync
+  # ── JOB 2 : stocks magasin ─────────────────────────────────
+  stocks:
+    needs: lecture-flux
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: flux
+          path: cache/
+      - name: Stocks sync
         env:
           GCP_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
         run: python stocks_sync.py
-
-      - name: Publish flux local to GitHub Pages
-        uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
-          path: docs/
+          name: sortie-stocks
+          path: |
+            docs/inventaire_magasin.csv
+            docs/exclusions_locales_gmc.csv
+          if-no-files-found: warn
+          retention-days: 2
 
-      - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v4
+  # ── JOB 3 : source descriptions (Lengow) ───────────────────
+  descriptions:
+    needs: lecture-flux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: flux
+          path: cache/
+      - name: Générer la source descriptions
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python descriptions.py
+      - name: Enregistrer le référentiel
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/referentiel_descriptions.csv
+          git diff --cached --quiet || (git commit -m "Référentiel descriptions $(date +%F)" && git pull --rebase && git push)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sortie-descriptions
+          path: |
+            docs/tbs_source_descriptions_site.csv
+            docs/rapports/descriptions_*.csv
+          retention-days: 2
 
+  # ── JOB 4 : attributs conversationnels (GMC direct) ────────
+  conversationnel:
+    needs: [lecture-flux, descriptions]
+    if: always() && needs.lecture-flux.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}   # récupère le référentiel descriptions commité par le job 3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: flux
+          path: cache/
+      - name: Générer Q&R et produits liés
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python conversationnel.py
+      - name: Enregistrer le référentiel
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/referentiel_qr.csv
+          git diff --cached --quiet || (git commit -m "Référentiel Q&R $(date +%F)" && git pull --rebase && git push)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sortie-conversationnel
+          path: |
+            docs/conversationnel_gmc.tsv
+            docs/rapports/qr_*.csv
+          retention-days: 2
+
+  # ── JOB 5 : publication GitHub Pages ───────────────────────
+  publication:
+    needs: [lecture-flux, stocks, descriptions, conversationnel]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Récupérer les sorties des jobs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sortie-*
+          merge-multiple: true
+          path: site/
+      - name: Reprendre la dernière version publiée de tout fichier manquant
+        env:
+          PAGES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+        run: |
+          for f in inventaire_magasin.csv exclusions_locales_gmc.csv tbs_source_descriptions_site.csv conversationnel_gmc.tsv; do
+            if [ ! -s "site/$f" ]; then
+              echo "⚠️ $f absent cette nuit : reprise de la version publiée"
+              curl -sf "$PAGES_URL/$f" -o "site/$f" || { echo "❌ $f introuvable sur Pages"; rm -f "site/$f"; }
+            fi
+          done
+          [ -d docs ] && cp -rn docs/. site/ || true
+          ls -la site/ site/rapports/ 2>/dev/null || true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+      - uses: actions/deploy-pages@v4
       - name: Keepalive
         if: always()
         run: gh api -X PUT repos/${{ github.repository }}/actions/workflows/stocks_sync.yml/enable
