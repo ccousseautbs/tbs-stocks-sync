@@ -1,5 +1,8 @@
 """
-STOCKS SYNC TBS — Script Python (version fusion Lengow FR)
+JOB 2 — STOCKS SYNC TBS (version fusion Lengow FR)
+
+Lit le flux canal Google depuis la copie locale du job 1 (cache/flux_gmc.csv),
+ou depuis l'URL Lengow si le script est lancé seul.
 
 1. Enregistre le projet GCP auprès de la Merchant API
 2. Lit le flux Lengow Google Merchant → index GTIN → offer_id (+ ads_grouping)
@@ -21,6 +24,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+
+import config
+from common.flux import clean, source_disponible, stream_csv
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -29,8 +35,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 log = logging.getLogger(__name__)
 
 # ─── CONFIG ─────────────────────────────────────────────────
-STOCKS_URL      = 'https://tbs.fr/Storage/Lengow/stocks.csv'
-LENGOW_URL      = 'https://feeds.lengow.io/3/jzdj298'
+STOCKS_URL      = config.URL_STOCKS
+LENGOW_URL      = source_disponible(config.FICHIER_FLUX_GMC, config.URL_FLUX_GMC)
 MERCHANT_ID     = '110798793'
 DEVELOPER_EMAIL = 'ton@email.com'   # ⚠️ à remplacer par ton adresse
 SHEET_ID        = '1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU'
@@ -50,9 +56,7 @@ MAX_WORKERS            = 10
 # Interrupteurs
 GENERATE_LEGACY_LOCAL_FILES = False  # False une fois Local FR supprimée dans GMC
 GENERATE_LOCAL_EXCLUSIONS   = True   # exclut des destinations locales les produits sans stock boutique
-LOCAL_DESTINATIONS          = ['free_local_listings', 'local_inventory_ads']
-ONLINE_DESTINATIONS         = ['shopping_ads', 'free_listings', 'display_ads']
-EXCLUDE_OUT_OF_STOCK_EVERYWHERE = True   # rupture web + aucune boutique → exclu de toutes les destinations
+LOCAL_DESTINATIONS          = 'Local_inventory_ads,Free_local_listings'
 ENABLE_API_PUSH             = False  # True seulement si l'inventaire passe par l'API et non par le fichier
 LOWERCASE_OFFER_IDS         = False  # garder la casse exacte des offer_id Lengow FR
 
@@ -97,33 +101,7 @@ LENGOW_COLS = [
 
 
 # ─── OUTILS ─────────────────────────────────────────────────
-def clean(value):
-    return value.strip().strip("'\"") if value else ''
-
-
-def stream_csv(url, delimiter):
-    """Lit un CSV distant en streaming, ligne par ligne.
-    Générateur : la réponse HTTP reste ouverte tant que les lignes sont consommées.
-    csv gère les retours à la ligne entre guillemets."""
-    with requests.get(url, stream=True, timeout=300) as resp:
-        resp.raise_for_status()
-        resp.encoding = 'utf-8'   # évite le repli ISO-8859-1 de requests
-
-        def lines():
-            buf, first = '', True
-            for chunk in resp.iter_content(chunk_size=1024 * 1024, decode_unicode=True):
-                if first:
-                    chunk, first = chunk.lstrip('\ufeff'), False
-                buf += chunk
-                parts = buf.split('\n')
-                buf = parts.pop()
-                for part in parts:
-                    yield part + '\n'   # csv recolle les lignes coupées entre guillemets
-            if buf:
-                yield buf
-
-        yield from csv.reader(lines(), delimiter=delimiter)
-
+# clean() et stream_csv() viennent de common/flux.py (partagés avec les autres jobs)
 
 def normalize_id(offer_id):
     return offer_id.lower() if LOWERCASE_OFFER_IDS else offer_id
@@ -160,14 +138,13 @@ def build_gtin_index():
     if 'offer_id' not in col or 'product_attributes.gtins_01' not in col:
         raise ValueError(f"Colonnes offer_id / gtins_01 introuvables dans Lengow : {headers[:10]}…")
 
-    gtin_index, gtin_ads, lengow_rows, all_offer_ids = {}, {}, [], {}
+    gtin_index, gtin_ads, lengow_rows, all_offer_ids = {}, {}, [], set()
     for row in reader:
         row = [clean(v) for v in row]
         get = lambda c: row[col[c]] if c in col and col[c] < len(row) else ''
         offer_id, gtin = get('offer_id'), get('product_attributes.gtins_01')
         if offer_id:
-            avail = get('product_attributes.availability').lower().replace(' ', '_')
-            all_offer_ids[normalize_id(offer_id)] = avail   # offer_id → disponibilité web
+            all_offer_ids.add(normalize_id(offer_id))
         if not (offer_id and gtin):
             continue
         gtin_index[gtin] = normalize_id(offer_id)
@@ -245,30 +222,19 @@ def generate_inventory_file(products):
 
 
 def generate_local_exclusions(all_offer_ids, products):
-    """Source supplémentaire GMC (libellé FR), recalculée chaque nuit :
-    - stock en boutique                  → aucune exclusion
-    - aucune boutique, en stock web      → exclu des destinations locales
-    - aucune boutique, rupture web       → exclu de toutes les destinations
-      (si EXCLUDE_OUT_OF_STOCK_EVERYWHERE), pour sortir ces SKU des diagnostics
-    Un produit qui revient en stock sort du fichier à la génération suivante."""
+    """Source supplémentaire GMC (libellé FR) : exclut des destinations locales
+    toutes les offres Lengow sans stock dans aucune boutique.
+    Un produit qui revient en stock boutique sort du fichier et redevient éligible au local."""
     in_store = {p['offer_id'] for p in products}
-    all_dest = ONLINE_DESTINATIONS + LOCAL_DESTINATIONS
-    n_local, n_all = 0, 0
+    excluded = sorted(all_offer_ids - in_store)
     os.makedirs(os.path.dirname(EXCLUSIONS_PATH), exist_ok=True)
     with open(EXCLUSIONS_PATH, 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
-        # Attribut répété : une colonne excluded_destination par valeur (largeur fixe)
-        w.writerow(['id'] + ['excluded_destination'] * len(all_dest))
-        for offer_id in sorted(all_offer_ids):
-            if offer_id in in_store:
-                continue
-            if EXCLUDE_OUT_OF_STOCK_EVERYWHERE and all_offer_ids[offer_id] == 'out_of_stock':
-                values, n_all = all_dest, n_all + 1
-            else:
-                values, n_local = LOCAL_DESTINATIONS, n_local + 1
-            w.writerow([offer_id] + values + [''] * (len(all_dest) - len(values)))
-    log.info(f"✅ Exclusions : {EXCLUSIONS_PATH} | locales seules : {n_local} | "
-             f"toutes destinations (rupture partout) : {n_all} | avec stock boutique : {len(in_store)}")
+        w.writerow(['id', 'excluded_destination'])
+        for offer_id in excluded:
+            w.writerow([offer_id, LOCAL_DESTINATIONS])
+    log.info(f"✅ Exclusions locales : {EXCLUSIONS_PATH} ({len(excluded)} produits exclus | "
+             f"{len(in_store)} produits avec stock boutique)")
 
 
 def generate_legacy_files(lengow_rows, products):

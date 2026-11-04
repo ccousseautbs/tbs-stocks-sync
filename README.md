@@ -1,29 +1,33 @@
-# Stocks Sync TBS
+# tbs-stocks-sync — flux GMC et Lengow TBS
 
-Synchronisation quotidienne du flux stocks TBS vers Google Sheets.
+Workflow nocturne (3h, heure de Paris) en 5 jobs :
 
-## Setup
+| Job | Script | Sortie publiée sur Pages | Destination |
+|---|---|---|---|
+| 1. Lecture flux | `fetch_flux.py` | — (cache partagé) | — |
+| 2. Stocks magasin | `stocks_sync.py` | `inventaire_magasin.csv`, `exclusions_locales_gmc.csv` | GMC |
+| 3. Descriptions | `descriptions.py` | `tbs_source_descriptions_site.csv` | Lengow (source additionnelle) |
+| 4. Conversationnel | `conversationnel.py` | `conversationnel_gmc.tsv` | GMC (source supplémentaire) |
+| 5. Publication | — | tout, avec reprise de la veille si un fichier manque | — |
 
-### 1. Créer le repo GitHub
-Pousse ces fichiers dans un repo privé GitHub.
+Réglages : `config.py` uniquement.
 
-### 2. Ajouter le secret GitHub
-GitHub → repo → Settings → Secrets and variables → Actions → New repository secret
-- Nom : `GCP_SERVICE_ACCOUNT_KEY`
-- Valeur : colle le contenu COMPLET du fichier JSON de ta clé de service
+## Référentiels (dossier `data/`, commités chaque nuit)
 
-### 3. Partager le Google Sheet
-Partage le Sheet `1x2E77GkjdFdPfVkBH6rW-V3fWiu9kuMxFA1MJI1v4gU`
-avec le compte de service en mode **Éditeur**.
+**`referentiel_descriptions.csv`** — une ligne par coloris (MPN). Une ligne existante n'est jamais régénérée :
+pour corriger un contenu, modifiez la ligne directement dans GitHub. Pour forcer une régénération, supprimez-la.
+Colonne `origine` : `import_initial`, `heritage` (copié des coloris frères), `regles` (champs catalogue), suffixe `+ia` si la description vient de Gemini.
 
-### 4. Activer Google Sheets API
-Google Cloud Console → APIs & Services → Bibliothèque → 
-cherche "Google Sheets API" → Activer sur le projet `gmc-merchant-api-500409`.
+**`referentiel_qr.csv`** — une ligne par modèle (parent), colonne `statut` :
+- `auto` : publiée (si `QR_IA_PUBLICATION_AUTO = True`)
+- `valide` : publiée (validation manuelle)
+- `revue` : bloquée par les garde-fous (terme sensible non justifié), à corriger puis passer en `valide`
+- `brouillon` : en attente de validation (si publication auto désactivée)
+- `rejete` : jamais publiée, jamais régénérée
 
-### 5. Tester manuellement
-GitHub → repo → Actions → "Stocks Sync TBS" → "Run workflow"
+## Rapports (publiés dans `rapports/`)
+- `descriptions_a_rediger.csv` : coloris sans description (pas de clé Gemini ou quota atteint)
+- `descriptions_revue.csv` : descriptions IA bloquées par les garde-fous
+- `qr_a_revoir.csv` : Q&R en revue, brouillon ou échec
 
-## Fichiers
-- `stocks_sync.py` — script principal
-- `requirements.txt` — dépendances Python
-- `.github/workflows/stocks_sync.yml` — workflow GitHub Actions
+Le résumé de chaque nuit apparaît aussi dans l'onglet Actions, sur la page de l'exécution.
