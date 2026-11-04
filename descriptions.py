@@ -240,7 +240,7 @@ def main():
         except QuotaAtteint:
             a_rediger.append(c)
             continue
-          if rep is None:   # échec technique : ne consomme pas d'essai
+        if rep is None:   # échec technique : ne consomme pas d'essai
             a_rediger.append(c)
             continue
         ligne['essais_ia'] = str(int(ligne['essais_ia'] or 0) + 1)
