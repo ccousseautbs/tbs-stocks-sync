@@ -141,6 +141,9 @@ def generer_qr_ia(ref_qr, parents_stock, coloris, ref_desc, par_parent):
         except QuotaAtteint:
             stats['en_attente'] += 1
             continue
+        if rep is None:   # échec technique : ne consomme pas d'essai
+            stats['en_attente'] += 1
+            continue
         ligne = ref_qr.get(parent) or {c: '' for c in COLS_REF_QR}
         ligne.update(parent=parent, date_maj=aujourd_hui,
                      essais_ia=str(int(ligne.get('essais_ia') or 0) + 1))
