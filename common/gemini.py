@@ -47,7 +47,7 @@ class Gemini:
         for essai in range(3):
             self.dernier = time.time()
             try:
-                resp = requests.post(url, headers={'x-goog-api-key': self.cle}, json=body, timeout=90)
+                resp = requests.post(url, headers={'x-goog-api-key': self.cle}, json=body, timeout=240)
             except requests.RequestException as e:
                 log.warning(f"Gemini indisponible ({e}), essai {essai + 1}/3")
                 time.sleep(20)
@@ -58,7 +58,7 @@ class Gemini:
                     time.sleep(60)
                     continue
                 self.quota_atteint = True
-                log.warning("Quota Gemini atteint : reprise à la prochaine exécution.")
+                log.warning(f"Quota Gemini atteint : reprise à la prochaine exécution. Détail : {resp.text[:400]}")
                 raise QuotaAtteint()
             if resp.status_code in (400, 401, 403, 404):
                 # Erreur de configuration (modèle retiré, clé invalide) : inutile d'insister cette nuit
