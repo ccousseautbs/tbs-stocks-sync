@@ -89,33 +89,38 @@ def qr_regles(c, ligne_desc, autres_coloris, titres_entretien):
 
 
 # ─── Q&R PAR IA ─────────────────────────────────────────────
-def prompt_qr(c_ref, contenus, coloris_noms):
+def bloc_modele(parent, c_ref, contenus, coloris_noms):
     textes = []
-    for l in contenus:
+    for l in contenus[:4]:   # 4 coloris suffisent pour décrire un modèle
         hl = '; '.join(l[h] for h in COLS_HL if l[h])
         dt = '; '.join(f"{l[f'detail_0{i}_attribut']} : {l[f'detail_0{i}_valeur']}"
                        for i in range(1, 7) if l[f'detail_0{i}_attribut'])
-        textes.append(f"- Description : {l['description']}\n  Points forts : {hl}\n  Détails : {dt}")
-    return f"""Tu rédiges la FAQ produit d'un modèle TBS (marque française de chaussures et vêtements, univers bord de mer),
-destinée aux assistants de recherche conversationnels.
-
-FAITS CATALOGUE :
+        textes.append(f"  - Description : {l['description']}\n    Points forts : {hl}\n    Détails : {dt}")
+    return f"""### id : {parent}
+Faits catalogue :
 {faits_produit(c_ref)}
 Coloris : {', '.join(coloris_noms)}
+Contenus validés :
+{chr(10).join(textes)[:2500]}"""
 
-CONTENUS VALIDÉS DU MODÈLE (un par coloris) :
-{chr(10).join(textes)[:4000]}
 
-CONSIGNES :
-- Rédige jusqu'à {N_QR} questions qu'un client se pose réellement avant d'acheter ce type de produit
+def prompt_lot_qr(blocs):
+    return f"""Tu rédiges la FAQ de modèles TBS (marque française de chaussures et vêtements, univers bord de mer),
+destinée aux assistants de recherche conversationnels. Une FAQ par modèle ci-dessous, chacun identifié par son id.
+
+{chr(10).join(blocs)}
+
+CONSIGNES (pour chaque modèle) :
+- Jusqu'à {N_QR} questions qu'un client se pose réellement avant d'acheter ce type de produit
   (usage, saison, style, confort, assortiment, entretien), avec des réponses utiles.
-- Chaque réponse doit s'appuyer UNIQUEMENT sur les informations ci-dessus. Si l'information manque, ne pose pas la question.
+- Chaque réponse s'appuie UNIQUEMENT sur les informations de CE modèle. Si l'information manque, ne pose pas la question.
 - Ne recopie pas les points forts ou les détails mot pour mot : reformule pour répondre à la question.
 - Interdit : prix, promotions, stock, délais de livraison, tailles disponibles, comparaison avec d'autres marques,
   toute caractéristique absente des informations (imperméabilité, certification, matière recyclée, lieu de fabrication…).
 - Question : 120 caractères maximum. Réponse : 1 à 3 phrases, 400 caractères maximum. Français, ton simple.
 
-Réponds uniquement en JSON : {{"qr": [{{"question": "...", "reponse": "..."}}]}}"""
+Réponds uniquement en JSON, avec exactement un élément par id :
+{{"modeles": [{{"id": "...", "qr": [{{"question": "...", "reponse": "..."}}]}}]}}"""
 
 
 def generer_qr_ia(ref_qr, parents_stock, coloris, ref_desc, par_parent):
@@ -124,10 +129,10 @@ def generer_qr_ia(ref_qr, parents_stock, coloris, ref_desc, par_parent):
     stats = Counter()
     a_traiter = [p for p, s in sorted(parents_stock.items(), key=lambda x: -x[1])
                  if p not in ref_qr or (ref_qr[p]['statut'] == 'echec' and int(ref_qr[p]['essais_ia'] or 0) < 2)]
+
+    # Préparation : seuls les modèles qui ont du contenu validé partent à l'IA
+    prets = []
     for parent in a_traiter:
-        if not gemini.disponible:
-            stats['en_attente'] += 1
-            continue
         mpns = par_parent[parent]
         contenus = [ref_desc[m.upper()] for m in mpns if m.upper() in ref_desc
                     and (ref_desc[m.upper()]['description'] or ref_desc[m.upper()]['product_highlight_1'])]
@@ -136,37 +141,47 @@ def generer_qr_ia(ref_qr, parents_stock, coloris, ref_desc, par_parent):
             continue
         c_ref = max((coloris[m] for m in mpns), key=lambda c: c['_stock'])
         noms = sorted({coloris[m]['_nom_coloris'] for m in mpns if coloris[m]['_nom_coloris']})
+        prets.append((parent, c_ref, contenus, noms))
+
+    lot = config.LOT_QR
+    for debut in range(0, len(prets), lot):
+        paquet = prets[debut:debut + lot]
+        if not gemini.disponible:
+            stats['en_attente'] += len(paquet)
+            continue
         try:
-            rep = gemini.json(prompt_qr(c_ref, contenus, noms))
+            rep = gemini.json(prompt_lot_qr([bloc_modele(*p) for p in paquet]))
         except QuotaAtteint:
-            stats['en_attente'] += 1
+            stats['en_attente'] += len(paquet)
             continue
         if rep is None:   # échec technique : ne consomme pas d'essai
-            stats['en_attente'] += 1
+            stats['en_attente'] += len(paquet)
             continue
-        ligne = ref_qr.get(parent) or {c: '' for c in COLS_REF_QR}
-        ligne.update(parent=parent, date_maj=aujourd_hui,
-                     essais_ia=str(int(ligne.get('essais_ia') or 0) + 1))
-        paires = [(nettoyer(x.get('question'), 150), nettoyer(x.get('reponse'), 900))
-                  for x in (rep or {}).get('qr', []) if isinstance(x, dict)]
-        paires = [(q, r) for q, r in paires if q and r][:N_QR]
-        if not paires:
-            ligne['statut'] = 'echec'
+        recus = {str(x.get('id', '')): x for x in (rep.get('modeles') or []) if isinstance(x, dict)}
+        for parent, c_ref, contenus, noms in paquet:
+            ligne = ref_qr.get(parent) or {c: '' for c in COLS_REF_QR}
+            ligne.update(parent=parent, date_maj=aujourd_hui, note='',
+                         essais_ia=str(int(ligne.get('essais_ia') or 0) + 1))
+            paires = [(nettoyer(x.get('question'), 150), nettoyer(x.get('reponse'), 900))
+                      for x in (recus.get(parent) or {}).get('qr', []) if isinstance(x, dict)]
+            paires = [(q, r) for q, r in paires if q and r][:N_QR]
+            if not paires:
+                ligne['statut'] = 'echec'
+                ref_qr[parent] = ligne
+                stats['echec'] += 1
+                continue
+            for i in range(1, N_QR + 1):
+                ligne[f'q{i}'], ligne[f'r{i}'] = paires[i - 1] if i <= len(paires) else ('', '')
+            source = faits_produit(c_ref) + '\n' + '\n'.join(
+                ' '.join(l[c] for c in ['description'] + COLS_HL + COLS_DT) for l in contenus)
+            douteux = termes_non_justifies(' '.join(q + ' ' + r for q, r in paires), source)
+            if douteux:
+                ligne['statut'], ligne['note'] = 'revue', 'termes non justifiés : ' + ', '.join(douteux)
+                stats['revue'] += 1
+            else:
+                ligne['statut'] = 'auto' if config.QR_IA_PUBLICATION_AUTO else 'brouillon'
+                stats['generees'] += 1
             ref_qr[parent] = ligne
-            stats['echec'] += 1
-            continue
-        for i in range(1, N_QR + 1):
-            ligne[f'q{i}'], ligne[f'r{i}'] = paires[i - 1] if i <= len(paires) else ('', '')
-        source = faits_produit(c_ref) + '\n' + '\n'.join(
-            ' '.join(l[c] for c in ['description'] + COLS_HL + COLS_DT) for l in contenus)
-        douteux = termes_non_justifies(' '.join(q + ' ' + r for q, r in paires), source)
-        if douteux:
-            ligne['statut'], ligne['note'] = 'revue', 'termes non justifiés : ' + ', '.join(douteux)
-            stats['revue'] += 1
-        else:
-            ligne['statut'] = 'auto' if config.QR_IA_PUBLICATION_AUTO else 'brouillon'
-            stats['generees'] += 1
-        ref_qr[parent] = ligne
     return stats, gemini.appels
 
 

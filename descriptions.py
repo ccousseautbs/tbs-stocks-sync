@@ -162,28 +162,35 @@ def contenu_herite(freres):
 
 
 # ─── GÉNÉRATION IA ──────────────────────────────────────────
-def prompt_description(c, freres, exemples):
-    ref_freres = '\n'.join(f"- {l['description']}" for l in freres if l['description'])[:1500]
-    ref_exemples = '\n'.join(f"- {d}" for d in exemples)[:1500]
-    return f"""Tu rédiges la description produit d'un article TBS (marque française de chaussures et vêtements, univers bord de mer).
-
-FAITS PRODUIT (seule source autorisée pour les caractéristiques) :
+def bloc_produit(c, freres, exemples):
+    ref_freres = '\n'.join(f"  - {l['description']}" for l in freres if l['description'])[:700]
+    ref_exemples = '\n'.join(f"  - {d}" for d in exemples)[:400]
+    return f"""### id : {c['MPN']}
+Faits produit (seule source autorisée pour les caractéristiques) :
 {faits_produit(c)}
+Descriptions validées des autres coloris du même modèle :
+{ref_freres or '  (aucune)'}
+Exemples de ton (même famille) :
+{ref_exemples or '  (aucun)'}"""
 
-DESCRIPTIONS DES AUTRES COLORIS DU MÊME MODÈLE (validées, réutilisables) :
-{ref_freres or '(aucune)'}
 
-EXEMPLES DE TON (autres produits de la même famille) :
-{ref_exemples or '(aucun)'}
+def prompt_lot_descriptions(items):
+    blocs = '\n\n'.join(bloc_produit(c, f, e) for c, f, e in items)
+    return f"""Tu rédiges les descriptions produit d'articles TBS (marque française de chaussures et vêtements, univers bord de mer).
+Une description par produit ci-dessous, chacun identifié par son id.
 
-CONSIGNES :
-- 2 à 3 phrases, 150 à 350 caractères, en français, vouvoiement implicite comme dans les exemples.
+{blocs}
+
+CONSIGNES (pour chaque produit) :
+- 2 à 3 phrases, 150 à 350 caractères, en français, ton des exemples.
 - Mentionne le coloris et le type de produit.
-- N'invente aucune caractéristique technique absente des faits ou des descriptions du même modèle
+- N'invente aucune caractéristique absente des faits ou des descriptions du même modèle
   (imperméabilité, certification, lieu de fabrication, technologie de semelle, matière recyclée…).
-- Pas de prix, pas de promotion, pas de majuscules d'insistance, pas de point d'exclamation multiple.
+- Pas de prix, pas de promotion, pas de majuscules d'insistance.
+- Chaque description ne parle que de son produit.
 
-Réponds uniquement en JSON : {{"description": "..."}}"""
+Réponds uniquement en JSON, avec exactement un élément par id :
+{{"produits": [{{"id": "...", "description": "..."}}]}}"""
 
 
 def main():
@@ -228,38 +235,46 @@ def main():
     manquantes = [(cle, c) for cle, c in perimetre.items()
                   if not ref[cle]['description'] and int(ref[cle]['essais_ia'] or 0) < MAX_ESSAIS_IA]
     manquantes.sort(key=lambda x: (ref[x[0]]['origine'] == 'import_initial', -x[1]['_stock']))
-    for cle, c in manquantes:
-        ligne = ref[cle]
+    lot = config.LOT_DESCRIPTIONS
+    for debut in range(0, len(manquantes), lot):
+        paquet = manquantes[debut:debut + lot]
         if not gemini.disponible:
-            a_rediger.append(c)
+            a_rediger += [c for _, c in paquet]
             continue
-        freres = [ref[m] for m in par_parent[c['parent']] if m in ref and m != cle]
-        exemples = par_famille.get(c.get('Famille commerciale', ''), [])[:2]
+        items, contexte = [], {}
+        for cle, c in paquet:
+            freres = [ref[m] for m in par_parent[c['parent']] if m in ref and m != cle]
+            exemples = par_famille.get(c.get('Famille commerciale', ''), [])[:1]
+            items.append((c, freres, exemples))
+            contexte[c['MPN'].upper()] = (cle, c, freres)
         try:
-            rep = gemini.json(prompt_description(c, freres, exemples))
+            rep = gemini.json(prompt_lot_descriptions(items))
         except QuotaAtteint:
-            a_rediger.append(c)
+            a_rediger += [c for _, c in paquet]
             continue
         if rep is None:   # échec technique : ne consomme pas d'essai
-            a_rediger.append(c)
+            a_rediger += [c for _, c in paquet]
             continue
-        ligne['essais_ia'] = str(int(ligne['essais_ia'] or 0) + 1)
-        desc = nettoyer((rep or {}).get('description', ''), 1500)
-        if not desc:
-            a_rediger.append(c)
-            continue
-        source = faits_produit(c) + '\n' + '\n'.join(l['description'] + ' ' + ' '.join(l[h] for h in COLS_HL)
-                                                     for l in freres)
-        douteux = termes_non_justifies(desc, source)
-        if douteux:
-            revue.append({'MPN': c['MPN'], 'texte_propose': desc, 'termes_non_justifies': ', '.join(douteux)})
-            stats['revue'] += 1
-            continue
-        ligne['description'] = desc
-        ligne['date_maj'] = aujourd_hui
-        if ligne['origine'] in ('heritage', 'regles'):
-            ligne['origine'] += '+ia'
-        stats['description_ia'] += 1
+        recus = {str(x.get('id', '')).upper(): x for x in (rep.get('produits') or []) if isinstance(x, dict)}
+        for id_maj, (cle, c, freres) in contexte.items():
+            ligne = ref[cle]
+            ligne['essais_ia'] = str(int(ligne['essais_ia'] or 0) + 1)
+            desc = nettoyer((recus.get(id_maj) or {}).get('description', ''), 1500)
+            if not desc:
+                a_rediger.append(c)
+                continue
+            source = faits_produit(c) + '\n' + '\n'.join(l['description'] + ' ' + ' '.join(l[h] for h in COLS_HL)
+                                                         for l in freres)
+            douteux = termes_non_justifies(desc, source)
+            if douteux:
+                revue.append({'MPN': c['MPN'], 'texte_propose': desc, 'termes_non_justifies': ', '.join(douteux)})
+                stats['revue'] += 1
+                continue
+            ligne['description'] = desc
+            ligne['date_maj'] = aujourd_hui
+            if ligne['origine'] in ('heritage', 'regles'):
+                ligne['origine'] += '+ia'
+            stats['description_ia'] += 1
 
     # 3. Écritures
     lignes = sorted(ref.values(), key=lambda l: l['item_group_id'])
