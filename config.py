@@ -28,7 +28,7 @@ REF_QR           = 'data/referentiel_qr.csv'
 # ─── GÉNÉRATION IA (Gemini) ─────────────────────────────────
 # Sans secret GEMINI_API_KEY, les scripts tournent quand même :
 # héritage + règles, et les manques partent dans le rapport « à rédiger ».
-GEMINI_MODELE              = 'gemini-2.5-flash'   # à ajuster selon les modèles disponibles en gratuit
+GEMINI_MODELE              = 'gemini-3.8-flash'   # à ajuster selon les modèles disponibles en gratuit
 GEMINI_PAUSE_SECONDES      = 7      # temporisation entre deux appels (niveau gratuit ≈ 10 req/min)
 MAX_APPELS_IA_DESCRIPTIONS = 150    # plafond par nuit, job descriptions (prioritaire)
 MAX_APPELS_IA_QR           = 150    # plafond par nuit, job Q&R
