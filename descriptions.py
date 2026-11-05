@@ -162,12 +162,13 @@ def contenu_herite(freres):
 
 
 # ─── GÉNÉRATION IA ──────────────────────────────────────────
-def bloc_produit(c, freres, exemples):
+def bloc_produit(c, freres, exemples, propres=None):
     ref_freres = '\n'.join(f"  - {l['description']}" for l in freres if l['description'])[:700]
     ref_exemples = '\n'.join(f"  - {d}" for d in exemples)[:400]
     return f"""### id : {c['MPN']}
 Faits produit (seule source autorisée pour les caractéristiques) :
 {faits_produit(c)}
+Points forts déjà validés pour ce coloris : {'; '.join(propres or []) or '(aucun)'}
 Descriptions validées des autres coloris du même modèle :
 {ref_freres or '  (aucune)'}
 Exemples de ton (même famille) :
@@ -175,15 +176,18 @@ Exemples de ton (même famille) :
 
 
 def prompt_lot_descriptions(items):
-    blocs = '\n\n'.join(bloc_produit(c, f, e) for c, f, e in items)
+    blocs = '\n\n'.join(bloc_produit(c, f, e, p) for c, f, e, p in items)
     return f"""Tu rédiges les descriptions produit d'articles TBS (marque française de chaussures et vêtements, univers bord de mer).
 Une description par produit ci-dessous, chacun identifié par son id.
 
 {blocs}
 
 CONSIGNES (pour chaque produit) — description destinée à Google Merchant Center :
-- 500 à 800 caractères, 4 à 6 phrases, en français.
+- 500 à 800 caractères, 4 à 6 phrases, en français. Exception : produit avec très peu de faits (accessoire,
+  produit d'entretien) → 250 à 400 caractères ; ne comble jamais avec des généralités.
+- Si un « Nom du produit » est fourni, appuie-toi d'abord sur lui pour dire ce qu'est le produit et à quoi il sert.
 - Première phrase factuelle et complète, lisible seule : type de produit, genre, matière principale et coloris
+  (genre, matière et coloris seulement s'ils figurent dans les faits)
   (ex. « Mocassin femme en cuir velours, coloris cognac. »). Pas d'accroche avant.
 - Phrases suivantes : construction et détails utiles (doublure, semelle, fermeture, coupe, col, manches…),
   puis usage et style, dans un ton chaleureux et incitatif, sans superlatif creux.
@@ -253,7 +257,7 @@ def main():
         for cle, c in paquet:
             freres = [ref[m] for m in par_parent[c['parent']] if m in ref and m != cle]
             exemples = par_famille.get(c.get('Famille commerciale', ''), [])[:1]
-            items.append((c, freres, exemples))
+            items.append((c, freres, exemples, [ref[cle][h] for h in COLS_HL if ref[cle][h]]))
             contexte[c['MPN'].upper()] = (cle, c, freres)
         try:
             rep = gemini.json(prompt_lot_descriptions(items))
@@ -271,7 +275,7 @@ def main():
             if not desc:
                 a_rediger.append(c)
                 continue
-            source = faits_produit(c) + '\n' + justification_pays(c) + '\n' + '\n'.join(l['description'] + ' ' + ' '.join(l[h] for h in COLS_HL)
+            source = faits_produit(c) + '\n' + justification_pays(c) + '\n' + ' '.join(ligne[h] for h in COLS_HL) + '\n' + '\n'.join(l['description'] + ' ' + ' '.join(l[h] for h in COLS_HL)
                                                          for l in freres)
             douteux = termes_non_justifies(desc, source)
             if douteux:
