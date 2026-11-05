@@ -1,4 +1,4 @@
-name: Flux TBS (stocks, descriptions, conversationnel)
+name: Flux TBS (stocks, contenu, enrichissement GMC)
 
 on:
   schedule:
@@ -62,7 +62,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 2
 
-  # ── JOB 3 : source descriptions (Lengow) ───────────────────
+  # ── JOB 3 : contenu éditorial (référentiel descriptions) ───
   descriptions:
     needs: lecture-flux
     runs-on: ubuntu-latest
@@ -92,12 +92,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sortie-descriptions
-          path: |
-            docs/tbs_source_descriptions_site.csv
-            docs/rapports/descriptions_*.csv
+          path: docs/rapports/descriptions_*.csv
           retention-days: 2
 
-  # ── JOB 4 : attributs conversationnels (GMC direct) ────────
+  # ── JOB 4 : enrichissement GMC (source supplémentaire unique) ─
   conversationnel:
     needs: [lecture-flux, descriptions]
     if: always() && needs.lecture-flux.result == 'success'
@@ -115,7 +113,7 @@ jobs:
         with:
           name: flux
           path: cache/
-      - name: Générer Q&R et produits liés
+      - name: Générer le fichier d'enrichissement GMC
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python conversationnel.py
@@ -129,7 +127,7 @@ jobs:
         with:
           name: sortie-conversationnel
           path: |
-            docs/conversationnel_gmc.tsv
+            docs/enrichissement_gmc.tsv
             docs/rapports/qr_*.csv
           retention-days: 2
 
@@ -151,7 +149,7 @@ jobs:
         env:
           PAGES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
         run: |
-          for f in inventaire_magasin.csv exclusions_locales_gmc.csv tbs_source_descriptions_site.csv conversationnel_gmc.tsv; do
+          for f in inventaire_magasin.csv exclusions_locales_gmc.csv enrichissement_gmc.tsv; do
             if [ ! -s "site/$f" ]; then
               echo "⚠️ $f absent cette nuit : reprise de la version publiée"
               curl -sf "$PAGES_URL/$f" -o "site/$f" || { echo "❌ $f introuvable sur Pages"; rm -f "site/$f"; }
