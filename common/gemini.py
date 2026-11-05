@@ -63,8 +63,11 @@ class Gemini:
             'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.4},
         }
         url = API.format(modele=config.GEMINI_MODELE)
-        attentes_5xx = [30, 90]   # Google surchargé (503) : on patiente de plus en plus
-        for essai in range(3):
+        # Google surchargé (503) : un seul réessai, après 2 minutes. Chaque requête compte dans le quota du jour,
+        # un lot en échec coûte donc 2 requêtes au lieu de 3.
+        attentes_5xx = [120]
+        essais = len(attentes_5xx) + 1
+        for essai in range(essais):
             if self.requetes >= self.plafond:
                 break
             self.dernier = time.time()
@@ -73,8 +76,8 @@ class Gemini:
                 resp = requests.post(url, headers={'x-goog-api-key': self.cle}, json=body, timeout=240)
             except requests.RequestException as e:
                 self.derniere_erreur = 'Google injoignable (réseau)'
-                log.warning(f"Gemini injoignable ({e}), essai {essai + 1}/3")
-                if essai < 2:
+                log.warning(f"Gemini injoignable ({e}), essai {essai + 1}/{essais}")
+                if essai < essais - 1:
                     time.sleep(attentes_5xx[essai])
                 continue
             if resp.status_code == 429:
@@ -93,8 +96,8 @@ class Gemini:
             if resp.status_code != 200:
                 # 500/502/503/504 : surcharge temporaire côté Google
                 self.derniere_erreur = f'Google surchargé ({resp.status_code})'
-                log.warning(f"Gemini {resp.status_code}, essai {essai + 1}/3 : {resp.text[:200]}")
-                if essai < 2:
+                log.warning(f"Gemini {resp.status_code}, essai {essai + 1}/{essais} : {resp.text[:200]}")
+                if essai < essais - 1:
                     time.sleep(attentes_5xx[essai])
                 continue
             self.appels += 1
@@ -105,7 +108,7 @@ class Gemini:
             except (KeyError, IndexError, ValueError) as e:
                 log.warning(f"Réponse Gemini illisible ({e})")
                 return None
-        # Lot en échec après 3 essais : au 2e lot consécutif, on arrête pour préserver le quota du jour
+        # Lot en échec après tous les essais : au 2e lot consécutif, on arrête pour préserver le quota du jour
         self.echecs_consecutifs += 1
         if self.echecs_consecutifs >= 2:
             self.arreter(getattr(self, 'derniere_erreur', 'échecs répétés') + ' sur 2 lots consécutifs')
