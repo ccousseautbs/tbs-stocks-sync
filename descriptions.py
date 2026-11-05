@@ -21,7 +21,7 @@ from datetime import date
 import config
 from common.flux import est_chaussure, lire_catalogue, source_disponible
 from common.gemini import Gemini, QuotaAtteint
-from common.texte import (decouper_composition, faits_produit, format_composition, hauteur_talon_cm,
+from common.texte import (decouper_composition, faits_produit, format_composition, hauteur_talon_cm, justification_pays,
                           nettoyer, pays, sans_prefixe, termes_non_justifies)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
@@ -181,12 +181,20 @@ Une description par produit ci-dessous, chacun identifié par son id.
 
 {blocs}
 
-CONSIGNES (pour chaque produit) :
-- 2 à 3 phrases, 150 à 350 caractères, en français, ton des exemples.
-- Mentionne le coloris et le type de produit.
+CONSIGNES (pour chaque produit) — description destinée à Google Merchant Center :
+- 500 à 800 caractères, 4 à 6 phrases, en français.
+- Première phrase factuelle et complète, lisible seule : type de produit, genre, matière principale et coloris
+  (ex. « Mocassin femme en cuir velours, coloris cognac. »). Pas d'accroche avant.
+- Phrases suivantes : construction et détails utiles (doublure, semelle, fermeture, coupe, col, manches…),
+  puis usage et style, dans un ton chaleureux et incitatif, sans superlatif creux.
 - N'invente aucune caractéristique absente des faits ou des descriptions du même modèle
-  (imperméabilité, certification, lieu de fabrication, technologie de semelle, matière recyclée…).
-- Pas de prix, pas de promotion, pas de majuscules d'insistance.
+  (imperméabilité, certification, lieu de fabrication, technologie de semelle, matière recyclée, usage sportif…).
+- N'attribue aucune performance absente des faits (adhérence, maintien, stabilité, résistance, durabilité, tenue).
+- Le pays de fabrication n'est mentionné que s'il figure dans les faits, une seule fois.
+- Ne répète pas une information déjà donnée. Si les faits sont peu nombreux, vise 500 caractères plutôt que 800.
+- Les « exemples de ton » servent uniquement pour le style : n'en reprends aucune caractéristique ni aucun usage.
+- Écris les termes techniques du catalogue en langage courant (ex. « col polo chaîne et trame » → « col polo tissé »).
+- Pas de prix, de promotion, de livraison, de majuscules d'insistance, ni de nom de modèle en majuscules.
 - Chaque description ne parle que de son produit.
 
 Réponds uniquement en JSON, avec exactement un élément par id :
@@ -263,7 +271,7 @@ def main():
             if not desc:
                 a_rediger.append(c)
                 continue
-            source = faits_produit(c) + '\n' + '\n'.join(l['description'] + ' ' + ' '.join(l[h] for h in COLS_HL)
+            source = faits_produit(c) + '\n' + justification_pays(c) + '\n' + '\n'.join(l['description'] + ' ' + ' '.join(l[h] for h in COLS_HL)
                                                          for l in freres)
             douteux = termes_non_justifies(desc, source)
             if douteux:

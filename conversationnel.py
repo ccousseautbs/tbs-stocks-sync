@@ -22,7 +22,8 @@ from datetime import date
 import config
 from common.flux import (est_chaussure, index_gtin_offer_id, lire_catalogue, source_disponible)
 from common.gemini import Gemini, QuotaAtteint
-from common.texte import decouper_composition, faits_produit, nettoyer, pays, termes_non_justifies
+from common.texte import (decouper_composition, faits_produit, justification_pays, nettoyer, pays_mentionnable,
+                          termes_non_justifies)
 from descriptions import COLS_DT, COLS_HL, lire_referentiel
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
@@ -77,7 +78,7 @@ def qr_regles(c, ligne_desc, autres_coloris, titres_entretien):
     if autres_coloris:
         qr.append(("Ce modèle existe-t-il dans d'autres coloris ?",
                    f"Oui, ce modèle est aussi proposé en {liste_fr(autres_coloris)}."))
-    p = pays(c.get('Pays de fabrication'))
+    p = pays_mentionnable(c)
     deja_hl = any('fabriqu' in (ligne_desc or {}).get(h, '').lower() for h in COLS_HL)
     if p and not deja_hl and config.QR_PAYS_FABRICATION:
         qr.append(("Où ce produit est-il fabriqué ?",
@@ -172,7 +173,7 @@ def generer_qr_ia(ref_qr, parents_stock, coloris, ref_desc, par_parent):
                 continue
             for i in range(1, N_QR + 1):
                 ligne[f'q{i}'], ligne[f'r{i}'] = paires[i - 1] if i <= len(paires) else ('', '')
-            source = faits_produit(c_ref) + '\n' + '\n'.join(
+            source = faits_produit(c_ref) + '\n' + justification_pays(c_ref) + '\n' + '\n'.join(
                 ' '.join(l[c] for c in ['description'] + COLS_HL + COLS_DT) for l in contenus)
             douteux = termes_non_justifies(' '.join(q + ' ' + r for q, r in paires), source)
             if douteux:

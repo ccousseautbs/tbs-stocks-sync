@@ -41,7 +41,7 @@ LOT_QR                     = 10     # modèles par appel → ≈ 80 modèles/nui
 # Mettre False pour exiger une validation (statut 'valide') dans data/referentiel_qr.csv.
 QR_IA_PUBLICATION_AUTO = True
 QR_IA_PAR_MODELE       = 3      # nombre de Q&R spécifiques demandées par modèle
-QR_PAYS_FABRICATION    = True   # Q&R « Où ce produit est-il fabriqué ? » (pays issu du catalogue)
+QR_PAYS_FABRICATION    = True   # Q&R « Où ce produit est-il fabriqué ? » (pays européens de PAYS_HIGHLIGHT uniquement)
 
 # ─── PÉRIMÈTRE ──────────────────────────────────────────────
 SEULEMENT_EN_STOCK = True   # ne génère du contenu que pour les coloris avec du stock
@@ -57,7 +57,7 @@ TERMES_SENSIBLES = [
     'garanti', 'garantie', 'anti-dérapant', 'antidérapant',
 ]
 
-# Highlight « Fabriqué en … » généré par règle uniquement pour ces pays
+# Pays de fabrication mentionnés dans les contenus (highlights, descriptions, Q&R) : pays européens uniquement
 PAYS_HIGHLIGHT = {'FR', 'IT', 'PT', 'ES'}
 
 PAYS = {
