@@ -2,7 +2,7 @@ name: Flux TBS (stocks, descriptions, conversationnel)
 
 on:
   schedule:
-    - cron: '0 1 * * *'   # 3h du matin heure de Paris (1h UTC)
+    - cron: '0 10 * * *'  # 11h heure de Paris l'hiver (10h UTC), après le pic de remise à zéro des quotas Gemini (9h)
   workflow_dispatch:
 
 permissions:
