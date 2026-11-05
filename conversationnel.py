@@ -1,8 +1,10 @@
 """
-JOB 4 — ATTRIBUTS CONVERSATIONNELS GMC (source supplémentaire directe, sans passer par Lengow)
+JOB 4 — ENRICHISSEMENT GMC (unique source supplémentaire, sans passer par Lengow)
 
-Produit docs/conversationnel_gmc.tsv : une ligne par offre GMC (id = offer_id du flux Lengow FR),
-avec question_and_answer et related_product au format texte Google.
+Produit docs/enrichissement_gmc.tsv : une ligne par offre GMC (id = offer_id du flux Lengow FR), avec
+structured_description (descriptions IA déclarées comme telles), product_highlight, product_detail,
+question_and_answer et related_product, au format texte Google.
+La source Lengow Tbs-source-descriptions-site reste figée et ne sert plus qu'aux autres canaux.
 
 Q&R :
 - par règles, recalculées chaque nuit (autres coloris en stock, pays de fabrication, entretien) ;
@@ -241,6 +243,15 @@ def guillemets(s):
     return nettoyer(s).replace('"', "'")
 
 
+def sous_attribut(valeur, maxi, toujours=False):
+    """Valeur de sous-attribut au format texte Google : entre guillemets si elle contient « : » ou « " »
+    (guillemets internes doublés)."""
+    v = nettoyer(valeur, maxi)
+    if toujours or ':' in v or '"' in v:
+        return '"' + v.replace('"', '""') + '"'
+    return v
+
+
 def main():
     skus, coloris = lire_catalogue(source_disponible(config.FICHIER_CATALOGUE, config.URL_CATALOGUE))
     gtin_offre = index_gtin_offer_id(source_disponible(config.FICHIER_FLUX_GMC, config.URL_FLUX_GMC))
@@ -267,51 +278,71 @@ def main():
 
     liens = construire_liens(skus, coloris, set(gtin_offre))
 
+    # Une ligne par offre GMC ; chaque attribut répété occupe autant de colonnes que nécessaire
+    ATTRS = ['structured_description', 'product_highlight', 'product_detail', 'question_and_answer', 'related_product']
     lignes, stats = [], Counter()
-    max_qr, max_liens = 0, 0
-    cache_qr_coloris = {}
+    maxi = Counter()
+    cache_mpn = {}
     for r in skus:
         offre = gtin_offre.get(r.get('EAN'))
         if not offre:
             continue
         mpn = r['MPN']
-        if mpn not in cache_qr_coloris:
+        if mpn not in cache_mpn:
             c = coloris[mpn]
+            l_desc = ref_desc.get(mpn.upper())
+            cellules = {a: [] for a in ATTRS}
+            # Contenu éditorial (référentiel descriptions)
+            if l_desc:
+                if l_desc['description']:
+                    type_source = '' if l_desc['origine'].startswith('manuel') else 'trained_algorithmic_media'
+                    cellules['structured_description'] = [f"{type_source}:{sous_attribut(l_desc['description'], 5000, toujours=True)}"]
+                cellules['product_highlight'] = [nettoyer(l_desc[h], 150) for h in COLS_HL if l_desc[h]]
+                cellules['product_detail'] = [
+                    ':'.join(sous_attribut(l_desc[f'detail_0{i}_{x}'], 100) for x in ('section', 'attribut', 'valeur'))
+                    for i in range(1, 7) if l_desc[f'detail_0{i}_attribut'] and l_desc[f'detail_0{i}_valeur']]
+            # Q&R
             autres = sorted({coloris[m]['_nom_coloris'].lower() for m in par_parent[c['parent']]
                              if m != mpn and coloris[m]['_stock'] > 0 and coloris[m]['_nom_coloris']
                              and coloris[m]['_nom_coloris'].lower() not in ('sans couleur', c['_nom_coloris'].lower())})[:6]
-            qr = qr_regles(c, ref_desc.get(mpn.upper()), autres, titres_entretien)
+            qr = qr_regles(c, l_desc, autres, titres_entretien)
             qr += qr_publiables(ref_qr[c['parent']]) if c['parent'] in ref_qr else []
-            cellules, total = [], 0
+            total = 0
             for q, rep in qr[:MAX_QR_PAR_OFFRE]:
                 cell = f'"{guillemets(q)}":"{guillemets(rep)[:1000]}"'
                 if total + len(cell) > MAX_CARACTERES_QR:
                     break
-                cellules.append(cell)
+                cellules['question_and_answer'].append(cell)
                 total += len(cell)
-            cache_qr_coloris[mpn] = cellules
-        cel_qr = cache_qr_coloris[mpn]
-        cel_liens = [f"{rel}:gtin:{g}" for rel, g in liens.get(r['EAN'], [])]
-        if not cel_qr and not cel_liens:
+            cache_mpn[mpn] = cellules
+        cellules = dict(cache_mpn[mpn])
+        cellules['related_product'] = [f"{rel}:gtin:{g}" for rel, g in liens.get(r['EAN'], [])]
+        if not any(cellules.values()):
             continue
-        lignes.append((offre, cel_qr, cel_liens))
-        max_qr, max_liens = max(max_qr, len(cel_qr)), max(max_liens, len(cel_liens))
+        lignes.append((offre, cellules))
+        for a in ATTRS:
+            maxi[a] = max(maxi[a], len(cellules[a]))
         stats['offres'] += 1
-        stats['avec_qr'] += bool(cel_qr)
-        stats['avec_liens'] += bool(cel_liens)
+        stats['avec_description'] += bool(cellules['structured_description'])
+        stats['avec_qr'] += bool(cellules['question_and_answer'])
+        stats['avec_liens'] += bool(cellules['related_product'])
 
-    os.makedirs(os.path.dirname(config.SORTIE_CONVERSATIONNEL), exist_ok=True)
-    with open(config.SORTIE_CONVERSATIONNEL, 'w', newline='', encoding='utf-8') as f:
-        w = csv.writer(f, delimiter='\t', quoting=csv.QUOTE_MINIMAL, lineterminator='\n')
-        w.writerow(['id'] + ['question_and_answer'] * max_qr + ['related_product'] * max_liens)
-        for offre, q, l in lignes:
-            w.writerow([offre] + q + [''] * (max_qr - len(q)) + l + [''] * (max_liens - len(l)))
+    # Écriture TSV brute (format texte Google) : aucune tabulation ni retour à la ligne dans les valeurs
+    os.makedirs(os.path.dirname(config.SORTIE_GMC), exist_ok=True)
+    with open(config.SORTIE_GMC, 'w', encoding='utf-8', newline='') as f:
+        f.write('\t'.join(['id'] + [a for a in ATTRS for _ in range(maxi[a])]) + '\n')
+        for offre, cellules in lignes:
+            valeurs = [offre]
+            for a in ATTRS:
+                valeurs += cellules[a] + [''] * (maxi[a] - len(cellules[a]))
+            f.write('\t'.join(v.replace('\t', ' ').replace('\n', ' ') for v in valeurs) + '\n')
 
     ecrire_csv(os.path.join(config.RAPPORTS_DIR, 'qr_a_revoir.csv'), COLS_REF_QR,
                [l for l in ref_qr.values() if l['statut'] in ('revue', 'brouillon', 'echec')])
 
     statuts = Counter(l['statut'] for l in ref_qr.values())
-    resume = (f"Conversationnel — offres : {stats['offres']} (Q&R : {stats['avec_qr']}, produits liés : "
+    resume = (f"Enrichissement GMC — offres : {stats['offres']} (descriptions : {stats['avec_description']}, "
+              f"Q&R : {stats['avec_qr']}, produits liés : "
               f"{stats['avec_liens']}) | Q&R IA cette nuit : {stats_ia['generees']} générées, {stats_ia['revue']} en revue, "
               f"{stats_ia['en_attente']} en attente | référentiel Q&R : {dict(statuts)}\n\n{resume_ia}")
     log.info(f"✅ {resume}")

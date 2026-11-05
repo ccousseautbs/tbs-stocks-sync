@@ -17,8 +17,8 @@ FICHIER_CATALOGUE    = 'cache/catalogue.csv'
 
 # ─── SORTIES PUBLIÉES (GitHub Pages) ────────────────────────
 SORTIE_DIR               = 'docs'
-SORTIE_DESCRIPTIONS      = 'docs/tbs_source_descriptions_site.csv'   # source additionnelle Lengow
-SORTIE_CONVERSATIONNEL   = 'docs/conversationnel_gmc.tsv'            # source supplémentaire GMC
+SORTIE_GMC               = 'docs/enrichissement_gmc.tsv'   # unique source supplémentaire GMC (descriptions, highlights,
+                                                           # details, Q&R, produits liés)
 RAPPORTS_DIR             = 'docs/rapports'
 
 # ─── RÉFÉRENTIELS VERSIONNÉS (commités par le workflow) ─────

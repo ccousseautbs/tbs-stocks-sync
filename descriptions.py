@@ -1,8 +1,8 @@
 """
-JOB 3 — SOURCE DESCRIPTIONS (remplace l'import manuel Tbs-source-descriptions-site dans Lengow)
+JOB 3 — CONTENU ÉDITORIAL (descriptions, highlights, product details)
 
-Produit docs/tbs_source_descriptions_site.csv au même format que le fichier importé à la main
-(mêmes colonnes, séparateur ;, clé item_group_id = MPN coloris) : aucun mapping Lengow à refaire.
+Alimente data/referentiel_descriptions.csv, publié vers GMC par le job 4 (enrichissement_gmc.tsv).
+La source Lengow Tbs-source-descriptions-site reste figée (import manuel) pour les autres canaux.
 
 Principe incrémental : data/referentiel_descriptions.csv conserve tout le contenu déjà produit.
 - Une ligne existante n'est jamais régénérée (correction manuelle = protégée).
@@ -287,7 +287,6 @@ def main():
     # 3. Écritures
     lignes = sorted(ref.values(), key=lambda l: l['item_group_id'])
     ecrire_csv(config.REF_DESCRIPTIONS, COLS_REF, lignes)
-    ecrire_csv(config.SORTIE_DESCRIPTIONS, COLS_SORTIE, lignes)
     ecrire_csv(os.path.join(config.RAPPORTS_DIR, 'descriptions_a_rediger.csv'),
                ['MPN', 'parent', 'Famille commerciale', 'coloris', 'stock'],
                [{'MPN': c['MPN'], 'parent': c['parent'], 'Famille commerciale': c.get('Famille commerciale', ''),
