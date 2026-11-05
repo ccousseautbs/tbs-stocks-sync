@@ -244,10 +244,11 @@ def guillemets(s):
 
 
 def sous_attribut(valeur, maxi, toujours=False):
-    """Valeur de sous-attribut au format texte Google : entre guillemets si elle contient « : » ou « " »
-    (guillemets internes doublés)."""
+    """Valeur au format texte Google : entre guillemets si elle contient « : », « , » ou « " »
+    (guillemets internes doublés). Sans guillemets, Google coupe la valeur à chaque virgule
+    (ex. « 2,2 cm » devient deux valeurs → « nombre de sous-attributs insuffisant »)."""
     v = nettoyer(valeur, maxi)
-    if toujours or ':' in v or '"' in v:
+    if toujours or any(ch in v for ch in ':,"'):
         return '"' + v.replace('"', '""') + '"'
     return v
 
@@ -297,7 +298,7 @@ def main():
                 if l_desc['description']:
                     type_source = '' if l_desc['origine'].startswith('manuel') else 'trained_algorithmic_media'
                     cellules['structured_description'] = [f"{type_source}:{sous_attribut(l_desc['description'], 5000, toujours=True)}"]
-                cellules['product_highlight'] = [nettoyer(l_desc[h], 150) for h in COLS_HL if l_desc[h]]
+                cellules['product_highlight'] = [sous_attribut(l_desc[h], 150) for h in COLS_HL if l_desc[h]]
                 cellules['product_detail'] = [
                     ':'.join(sous_attribut(l_desc[f'detail_0{i}_{x}'], 100) for x in ('section', 'attribut', 'valeur'))
                     for i in range(1, 7) if l_desc[f'detail_0{i}_attribut'] and l_desc[f'detail_0{i}_valeur']]
