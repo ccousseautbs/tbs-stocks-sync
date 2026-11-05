@@ -118,6 +118,9 @@ CONSIGNES (pour chaque modèle) :
 - Ne recopie pas les points forts ou les détails mot pour mot : reformule pour répondre à la question.
 - Interdit : prix, promotions, stock, délais de livraison, tailles disponibles, comparaison avec d'autres marques,
   toute caractéristique absente des informations (imperméabilité, certification, matière recyclée, lieu de fabrication…).
+- Aucune performance absente des informations (adhérence, résistance, durabilité, maintien, légèreté…).
+- Aucune allégation de santé ou de compatibilité médicale (semelles orthopédiques, podologie, douleurs, posture),
+  même si une semelle est amovible : décris le fait (« semelle amovible »), jamais l'usage médical.
 - Question : 120 caractères maximum. Réponse : 1 à 3 phrases, 400 caractères maximum. Français, ton simple.
 
 Réponds uniquement en JSON, avec exactement un élément par id :

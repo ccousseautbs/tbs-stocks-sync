@@ -55,6 +55,7 @@ TERMES_SENSIBLES = [
     'leather working group', 'certifié', 'certifiée', 'orthopédique', 'vegan',
     'recyclé', 'recyclée', 'bio', 'biologique', 'éco-responsable', 'écoresponsable',
     'garanti', 'garantie', 'anti-dérapant', 'antidérapant',
+    'médical', 'médicale', 'médicales', 'thérapeutique', 'podologue', 'podologique', 'posture',
 ]
 
 # Pays de fabrication mentionnés dans les contenus (highlights, descriptions, Q&R) : pays européens uniquement
