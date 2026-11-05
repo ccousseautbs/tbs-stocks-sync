@@ -296,8 +296,9 @@ def main():
                ['MPN', 'texte_propose', 'termes_non_justifies'], revue)
 
     resume = (f"Descriptions — nouveaux coloris : {stats['heritage']} hérités, {stats['regles']} par règles | "
-              f"descriptions IA : {stats['description_ia']} ({gemini.appels} appels) | "
-              f"en revue : {stats['revue']} | à rédiger : {len(a_rediger)} | référentiel : {len(lignes)}")
+              f"descriptions IA : {stats['description_ia']} | "
+              f"en revue : {stats['revue']} | à rédiger : {len(a_rediger)} | référentiel : {len(lignes)}\n\n"
+              f"{gemini.resume()}")
     log.info(f"✅ {resume}")
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:

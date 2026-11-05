@@ -183,7 +183,7 @@ def generer_qr_ia(ref_qr, parents_stock, coloris, ref_desc, par_parent):
                 ligne['statut'] = 'auto' if config.QR_IA_PUBLICATION_AUTO else 'brouillon'
                 stats['generees'] += 1
             ref_qr[parent] = ligne
-    return stats, gemini.appels
+    return stats, gemini.resume()
 
 
 # ─── PRODUITS LIÉS ──────────────────────────────────────────
@@ -253,7 +253,7 @@ def main():
             parents_stock[c['parent']] += c['_stock']
 
     # Q&R IA : uniquement les modèles en stock absents du référentiel
-    stats_ia, appels = generer_qr_ia(ref_qr, parents_stock, coloris, ref_desc, par_parent)
+    stats_ia, resume_ia = generer_qr_ia(ref_qr, parents_stock, coloris, ref_desc, par_parent)
     ecrire_csv(config.REF_QR, COLS_REF_QR, sorted(ref_qr.values(), key=lambda l: l['parent']))
 
     titres_entretien = []
@@ -310,7 +310,7 @@ def main():
     statuts = Counter(l['statut'] for l in ref_qr.values())
     resume = (f"Conversationnel — offres : {stats['offres']} (Q&R : {stats['avec_qr']}, produits liés : "
               f"{stats['avec_liens']}) | Q&R IA cette nuit : {stats_ia['generees']} générées, {stats_ia['revue']} en revue, "
-              f"{stats_ia['en_attente']} en attente ({appels} appels) | référentiel Q&R : {dict(statuts)}")
+              f"{stats_ia['en_attente']} en attente | référentiel Q&R : {dict(statuts)}\n\n{resume_ia}")
     log.info(f"✅ {resume}")
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
