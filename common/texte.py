@@ -64,6 +64,22 @@ def pays(code):
     return config.PAYS.get(code, '')
 
 
+def pays_mentionnable(c):
+    """Pays affiché dans les contenus uniquement s'il fait partie de config.PAYS_HIGHLIGHT (pays européens)."""
+    code = (c.get('Pays de fabrication') or '').strip().upper()
+    return pays(code) if code in config.PAYS_HIGHLIGHT else ''
+
+
+def justification_pays(c):
+    """Formulations autorisées par le pays de fabrication (évite qu'un « fabriqué en France » exact parte en revue)."""
+    p = pays_mentionnable(c).lower()
+    if not p:
+        return ''
+    formes = [f"{v} {prep} {p}" for v in ('fabriqué', 'fabriquée', 'fabriqués', 'fabriquées', 'confectionné',
+                                         'confectionnée', 'made') for prep in ('en', 'au', 'in')]
+    return ' '.join(formes)
+
+
 def faits_produit(c):
     """Texte factuel (catalogue) servant de base aux prompts et aux garde-fous."""
     lignes = []
@@ -78,7 +94,7 @@ def faits_produit(c):
         lib, val = decouper_composition(c.get(f'Composition {i}'))
         if val:
             lignes.append(f"Composition{' ' + lib if lib else ''} : {format_composition(val) or val}")
-    p = pays(c.get('Pays de fabrication'))
+    p = pays_mentionnable(c)
     if p:
         lignes.append(f"Pays de fabrication : {p}")
     if c.get('_nom_coloris'):

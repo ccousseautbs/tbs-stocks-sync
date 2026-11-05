@@ -93,7 +93,7 @@ def nom_coloris(axis_color, mpn):
     code = code_coloris(mpn)
     if code and nom.upper().endswith(code.upper()):
         nom = nom[: -len(code)]
-    return nom.strip(' *').capitalize()
+    return nom.strip(' *-+').capitalize()
 
 
 def lire_catalogue(source):
