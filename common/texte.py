@@ -80,9 +80,17 @@ def justification_pays(c):
     return ' '.join(formes)
 
 
+def coloris_affichable(c):
+    """Nom du coloris, ou '' pour les produits sans couleur (« Sans couleur », « Sans couleur1000 »…)."""
+    nom = (c.get('_nom_coloris') or '').strip()
+    return '' if nom.lower().startswith('sans couleur') else nom
+
+
 def faits_produit(c):
     """Texte factuel (catalogue) servant de base aux prompts et aux garde-fous."""
     lignes = []
+    if c.get('_titre'):
+        lignes.append(f"Nom du produit : {c['_titre']}")
     champs = ['Famille commerciale', 'Sous Famille commerciale', 'Genre', 'Hauteur de talon chaussures',
               'Fermeture chaussures', 'Coupe textile', 'Fermeture textile', 'Col textile',
               'Manches textile', 'Style', 'Finitions textile', 'Capuche textile', 'Doublure textile',
@@ -97,8 +105,8 @@ def faits_produit(c):
     p = pays_mentionnable(c)
     if p:
         lignes.append(f"Pays de fabrication : {p}")
-    if c.get('_nom_coloris'):
-        lignes.append(f"Coloris : {c['_nom_coloris']}")
+    if coloris_affichable(c):
+        lignes.append(f"Coloris : {coloris_affichable(c)}")
     return '\n'.join(lignes)
 
 
@@ -108,7 +116,8 @@ def _norm(s):
 
 def termes_non_justifies(texte_genere, texte_source):
     """Termes sensibles présents dans le texte généré mais absents des données source."""
-    g, s = _norm(texte_genere), _norm(texte_source)
+    accords = lambda t: re.sub(r'\b(fabriqu|confectionn)(é|ée|és|ées)\b', r'\1é', t)
+    g, s = accords(_norm(texte_genere)), accords(_norm(texte_source))
     return [t for t in config.TERMES_SENSIBLES
             if re.search(r'\b' + re.escape(t) + r'\b', g) and not re.search(r'\b' + re.escape(t) + r'\b', s)]
 
