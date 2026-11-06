@@ -2,8 +2,15 @@ name: Flux TBS (stocks, contenu, enrichissement GMC)
 
 on:
   schedule:
-    - cron: '0 10 * * *'  # 11h heure de Paris l'hiver (10h UTC), après le pic de remise à zéro des quotas Gemini (9h)
+    - cron: '0 1 * * *'   # STOCKS : 2h heure de Paris l'hiver / 3h l'été → récupérations GMC à 5h
+    - cron: '0 10 * * *'  # CONTENU : 11h l'hiver / 12h l'été, après la remise à zéro du quota Gemini (9h)
   workflow_dispatch:
+    inputs:
+      perimetre:
+        description: "Que lancer ? (contenu et tout consomment le quota Gemini du jour)"
+        type: choice
+        options: [stocks, contenu, tout]
+        default: stocks
 
 permissions:
   contents: write
@@ -37,6 +44,7 @@ jobs:
   # ── JOB 2 : stocks magasin ─────────────────────────────────
   stocks:
     needs: lecture-flux
+    if: github.event.schedule == '0 1 * * *' || inputs.perimetre == 'stocks' || inputs.perimetre == 'tout'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -65,6 +73,7 @@ jobs:
   # ── JOB 3 : contenu éditorial (référentiel descriptions) ───
   descriptions:
     needs: lecture-flux
+    if: github.event.schedule == '0 10 * * *' || inputs.perimetre == 'contenu' || inputs.perimetre == 'tout'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -98,7 +107,7 @@ jobs:
   # ── JOB 4 : enrichissement GMC (source supplémentaire unique) ─
   conversationnel:
     needs: [lecture-flux, descriptions]
-    if: always() && needs.lecture-flux.result == 'success'
+    if: always() && needs.lecture-flux.result == 'success' && (github.event.schedule == '0 10 * * *' || inputs.perimetre == 'contenu' || inputs.perimetre == 'tout')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -140,6 +149,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Récupérer les sorties des jobs
+        continue-on-error: true   # un passage « stocks » seul n'a pas de sortie contenu, et inversement
         uses: actions/download-artifact@v4
         with:
           pattern: sortie-*
@@ -149,7 +159,9 @@ jobs:
         env:
           PAGES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
         run: |
-          for f in inventaire_magasin.csv exclusions_locales_gmc.csv enrichissement_gmc.tsv; do
+          mkdir -p site/rapports
+          for f in inventaire_magasin.csv exclusions_locales_gmc.csv enrichissement_gmc.tsv \
+                   rapports/descriptions_a_rediger.csv rapports/descriptions_revue.csv rapports/qr_a_revoir.csv; do
             if [ ! -s "site/$f" ]; then
               echo "⚠️ $f absent cette nuit : reprise de la version publiée"
               curl -sf "$PAGES_URL/$f" -o "site/$f" || { echo "❌ $f introuvable sur Pages"; rm -f "site/$f"; }
