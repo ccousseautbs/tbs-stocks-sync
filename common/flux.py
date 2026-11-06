@@ -42,18 +42,32 @@ def stream_csv(source, delimiter):
             yield from csv.reader(f, delimiter=delimiter)
 
 
-def telecharger(url, chemin):
-    """Télécharge un fichier en streaming sur disque (job 1)."""
+def telecharger(url, chemin, essais=4, attente=90):
+    """Télécharge un fichier sur disque, d'une traite (sans traitement pendant la lecture),
+    avec réessais : le serveur peut couper la connexion (« Response ended prematurely »),
+    par exemple pendant la régénération du fichier."""
+    import time
     os.makedirs(os.path.dirname(chemin), exist_ok=True)
-    with requests.get(url, stream=True, timeout=600) as resp:
-        resp.raise_for_status()
-        with open(chemin, 'wb') as f:
-            for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                f.write(chunk)
-    taille = os.path.getsize(chemin)
-    if taille < 1000:
-        raise ValueError(f"Fichier téléchargé trop petit ({taille} octets) : {url}")
-    log.info(f"✅ {url} → {chemin} ({taille / 1e6:.1f} Mo)")
+    for essai in range(1, essais + 1):
+        try:
+            with requests.get(url, stream=True, timeout=600) as resp:
+                resp.raise_for_status()
+                attendu = int(resp.headers.get('Content-Length') or 0)
+                with open(chemin, 'wb') as f:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
+            taille = os.path.getsize(chemin)
+            if taille < 1000:
+                raise ValueError(f"fichier trop petit ({taille} octets)")
+            if attendu and taille < attendu:
+                raise ValueError(f"fichier incomplet ({taille} / {attendu} octets)")
+            log.info(f"✅ {url} → {chemin} ({taille / 1e6:.1f} Mo)")
+            return
+        except (requests.RequestException, ValueError) as e:
+            log.warning(f"Téléchargement {url} interrompu ({e}), essai {essai}/{essais}")
+            if essai == essais:
+                raise
+            time.sleep(attente)
 
 
 def source_disponible(chemin_local, url):
