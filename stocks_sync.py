@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 import config
-from common.flux import clean, source_disponible, stream_csv
+    from common.flux import clean, source_disponible, stream_csv, telecharger
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 
 # ─── CONFIG ─────────────────────────────────────────────────
 STOCKS_URL      = config.URL_STOCKS
+STOCKS_LOCAL    = 'cache/stocks.csv'
 LENGOW_URL      = source_disponible(config.FICHIER_FLUX_GMC, config.URL_FLUX_GMC)
 MERCHANT_ID     = '110798793'
 DEVELOPER_EMAIL = 'ton@email.com'   # ⚠️ à remplacer par ton adresse
@@ -163,8 +164,9 @@ def stream_and_filter(gtin_index, gtin_ads):
     On garde donc la dernière ligne par (boutique, EAN), puis on filtre :
     in_stock, quantité > 0, boutique renseignée (hors NONE), GTIN connu de Lengow.
     Prix et dates promo de l'export sont ignorés (le prix vient de Lengow)."""
-    log.info(f"Lecture stocks en streaming : {STOCKS_URL}")
-    reader = stream_csv(STOCKS_URL, ';')
+    telecharger(STOCKS_URL, STOCKS_LOCAL)
+    log.info(f"Lecture stocks : {STOCKS_LOCAL}")
+    reader = stream_csv(STOCKS_LOCAL, ';')
 
     headers = [clean(h) for h in next(reader)]
     i_id, i_store, i_avail = headers.index('id'), headers.index('store_code'), headers.index('availability')
