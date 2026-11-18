@@ -2,7 +2,7 @@ name: Flux TBS (stocks, contenu, enrichissement GMC)
 
 on:
   schedule:
-    - cron: '0 1 * * *'   # STOCKS : 2h heure de Paris l'hiver / 3h l'été → récupérations GMC à 5h
+    - cron: '0 */3 * * *'   # toutes les 4 h (heures UTC : 0h, 4h, 8h… soit 1h, 5h, 9h… à Paris)
     - cron: '0 10 * * *'  # CONTENU : 11h l'hiver / 12h l'été, après la remise à zéro du quota Gemini (9h)
   workflow_dispatch:
     inputs:
