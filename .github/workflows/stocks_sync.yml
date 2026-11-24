@@ -2,8 +2,8 @@ name: Flux TBS (stocks, contenu, enrichissement GMC)
 
 on:
   schedule:
-    - cron: '0 */3 * * *'   # toutes les 4 h (heures UTC : 0h, 4h, 8h… soit 1h, 5h, 9h… à Paris)
-    - cron: '0 10 * * *'  # CONTENU : 11h l'hiver / 12h l'été, après la remise à zéro du quota Gemini (9h)
+    - cron: '0 */3 * * *'   # STOCKS : toutes les 3 h (UTC 0h, 3h, 6h… soit 1h, 4h, 7h… à Paris l'hiver)
+    - cron: '0 10 * * *'    # CONTENU : 11h l'hiver / 12h l'été, après la remise à zéro du quota Gemini (9h)
   workflow_dispatch:
     inputs:
       perimetre:
@@ -44,7 +44,7 @@ jobs:
   # ── JOB 2 : stocks magasin ─────────────────────────────────
   stocks:
     needs: lecture-flux
-    if: github.event.schedule == '0 1 * * *' || inputs.perimetre == 'stocks' || inputs.perimetre == 'tout'
+    if: github.event.schedule == '0 */3 * * *' || inputs.perimetre == 'stocks' || inputs.perimetre == 'tout'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
