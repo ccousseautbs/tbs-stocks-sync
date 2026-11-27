@@ -14,10 +14,13 @@ TC_GRILLE_MIN_REGLE_2 = 4     # en dessous, seule la règle 1 s'applique
 TC_CHAMP_LABEL = "custom label 1"
 TC_FICHIER_SORTIE = "tailles_cassees_gmc.tsv"
 # Noms des champs dans le cache du flux (à ajuster)
-TC_COL_ID = "id"
-TC_COL_GROUPE = "item_group_id"
-TC_COL_TAILLE = "size"
-TC_COL_DISPO = "availability"
+# Noms de colonnes candidats, testés dans l'ordre (casse et préfixe "g:" ignorés).
+# Mettre le vrai nom en tête de liste une fois identifié dans les logs.
+TC_COL_ID = ["id", "item_id", "offer_id", "sku"]
+TC_COL_GROUPE = ["item_group_id", "parent_id", "id_parent", "parent_sku", "group_id"]
+TC_COL_TAILLE = ["size", "taille", "size_eu", "pointure"]
+TC_COL_DISPO = ["availability", "disponibilite", "disponibilité", "stock_status",
+                "quantity", "quantite", "quantité", "stock"]
 # ---------------------------------------------------------------------------
 
 # ─── SOURCES ────────────────────────────────────────────────
