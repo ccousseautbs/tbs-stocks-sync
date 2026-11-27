@@ -15,21 +15,6 @@ Réglages à déplacer dans config.py (préfixe TC_).
 import csv
 from collections import defaultdict
 
-# --- À déplacer dans config.py -------------------------------------------
-TC_MIN_TAILLES = 2
-TC_NB_EXTREMES = 2            # tailles "extrêmes" de chaque côté, grilles longues
-TC_NB_EXTREMES_PETITE = 1     # idem, grilles courtes
-TC_SEUIL_GRILLE_LONGUE = 8
-TC_GRILLE_MIN_REGLE_2 = 4     # en dessous, seule la règle 1 s'applique
-TC_CHAMP_LABEL = "custom label 1"
-TC_FICHIER_SORTIE = "tailles_cassees_gmc.tsv"
-# Noms des champs dans le cache du flux (à ajuster)
-TC_COL_ID = "id"
-TC_COL_GROUPE = "item_group_id"
-TC_COL_TAILLE = "size"
-TC_COL_DISPO = "availability"
-# ---------------------------------------------------------------------------
-
 ORDRE_LETTRES = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL"]
 ALIAS = {"2XL": "XXL", "XXXL": "3XL"}
 
@@ -44,7 +29,30 @@ def rang_taille(size):
 
 
 def est_dispo(valeur):
-    return str(valeur).strip().lower().replace("_", " ") == "in stock"
+    """Accepte un statut texte (in stock, in_stock, disponible…) ou une quantité (> 0)."""
+    v = str(valeur).strip().lower().replace("_", " ")
+    if v in ("in stock", "instock", "disponible", "en stock", "true", "oui", "yes"):
+        return True
+    try:
+        return float(v.replace(",", ".")) > 0
+    except ValueError:
+        return False
+
+
+def _norm(nom):
+    n = str(nom).strip().lower()
+    return n[2:] if n.startswith("g:") else n
+
+
+def _trouver(colonnes, candidats):
+    """Renvoie le nom réel de la première colonne qui correspond à un candidat."""
+    if isinstance(candidats, str):
+        candidats = [candidats]
+    index = {_norm(c): c for c in colonnes}
+    for cand in candidats:
+        if _norm(cand) in index:
+            return index[_norm(cand)]
+    return None
 
 
 def detecter(variantes):
@@ -75,18 +83,22 @@ def detecter(variantes):
     return labels
 
 
-def run(lignes_flux, dossier_sortie="."):
-    """lignes_flux : itérable de dicts issus du cache du job 1."""
+def run(lignes_flux, dossier_sortie=".", colonnes=None):
+    """lignes_flux : liste de dicts issus du cache du job 1."""
+    colonnes = colonnes or _colonnes(lignes_flux[0].keys())
+    c_id, c_grp, c_tai, c_dis = colonnes
     variantes = [
         {
-            "id": l[TC_COL_ID],
-            "groupe": l.get(TC_COL_GROUPE) or l[TC_COL_ID],
-            "taille": l.get(TC_COL_TAILLE, ""),
-            "dispo": est_dispo(l.get(TC_COL_DISPO, "")),
+            "id": l[c_id],
+            "groupe": (l.get(c_grp) if c_grp else None) or l[c_id],
+            "taille": l.get(c_tai, ""),
+            "dispo": est_dispo(l.get(c_dis, "")),
         }
         for l in lignes_flux
-        if l.get(TC_COL_ID)
+        if l.get(c_id)
     ]
+    if not c_grp:
+        print("⚠️ Pas de colonne modèle (item_group_id) : chaque variante est traitée seule")
     labels = detecter(variantes)
 
     with open(f"{dossier_sortie}/{TC_FICHIER_SORTIE}", "w", newline="", encoding="utf-8") as f:
@@ -125,10 +137,18 @@ def _lire_fichier(chemin):
         return list(csv.DictReader(f, dialect=dialecte))
 
 
+def _colonnes(noms):
+    noms = list(noms)
+    return (_trouver(noms, TC_COL_ID), _trouver(noms, TC_COL_GROUPE),
+            _trouver(noms, TC_COL_TAILLE), _trouver(noms, TC_COL_DISPO))
+
+
+MOTS_CLES = ("id", "group", "parent", "size", "taille", "point", "avail", "dispo", "stock", "quant")
+
+
 def charger_flux(dossier="cache"):
     """Cherche dans le cache le fichier qui contient id + disponibilité + taille."""
     import os
-    requis = {TC_COL_ID, TC_COL_DISPO, TC_COL_TAILLE}
     for racine, _, fichiers in os.walk(dossier):
         for nom in sorted(fichiers):
             if not nom.lower().endswith((".csv", ".tsv", ".txt", ".xml")):
@@ -139,14 +159,24 @@ def charger_flux(dossier="cache"):
             except Exception as e:
                 print(f"Lecture impossible : {chemin} ({e})")
                 continue
-            if lignes and requis <= set(lignes[0].keys()):
-                print(f"Flux utilisé : {chemin} ({len(lignes)} lignes)")
-                return lignes
-            print(f"Ignoré : {chemin} — colonnes : {sorted(lignes[0].keys())[:15] if lignes else 'vide'}")
-    raise SystemExit(f"Aucun fichier du cache ne contient les colonnes {sorted(requis)} : ajuster TC_COL_*")
+            if not lignes:
+                print(f"Ignoré : {chemin} — vide")
+                continue
+            cols = _colonnes(lignes[0].keys())
+            if cols[0] and cols[2] and cols[3]:
+                print(f"Flux utilisé : {chemin} ({len(lignes)} lignes) — "
+                      f"id={cols[0]} | modèle={cols[1]} | taille={cols[2]} | dispo={cols[3]}")
+                return lignes, cols
+            utiles = [c for c in lignes[0].keys() if any(m in c.lower() for m in MOTS_CLES)]
+            print(f"Ignoré : {chemin} — {len(lignes[0])} colonnes ; trouvées : "
+                  f"id={cols[0]} | modèle={cols[1]} | taille={cols[2]} | dispo={cols[3]}")
+            print(f"   colonnes pertinentes : {utiles}")
+    raise SystemExit("Aucun fichier du cache ne contient id + taille + disponibilité : "
+                     "ajouter le bon nom en tête de TC_COL_* (voir 'colonnes pertinentes' ci-dessus)")
 
 
 if __name__ == "__main__":
     import os
     os.makedirs("docs", exist_ok=True)
-    run(charger_flux("cache"), "docs")
+    lignes, cols = charger_flux("cache")
+    run(lignes, "docs", cols)
