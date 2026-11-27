@@ -21,13 +21,14 @@ from config import (
     CACHE_DIR, SORTIE_DIR,
 )
 
-ORDRE_LETTRES = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL"]
+ORDRE_LETTRES = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL", "5XL", "6XL"]
 ALIAS = {"2XL": "XXL", "XXXL": "3XL"}
 
 
 def rang_taille(size):
     s = str(size).strip().upper().replace(",", ".")
     s = ALIAS.get(s, s)
+    s = s.split("/")[0]   # fourchettes de pointures : 39/42 -> 39
     try:
         return float(s)
     except ValueError:
