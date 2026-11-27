@@ -70,6 +70,31 @@ jobs:
           if-no-files-found: warn
           retention-days: 2
 
+  # ── JOB 2b : tailles cassées (custom label 1) ──────────────
+  tailles-cassees:
+    needs: lecture-flux
+    if: github.event.schedule == '0 */3 * * *' || inputs.perimetre == 'stocks' || inputs.perimetre == 'tout'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: flux
+          path: cache/
+      - name: Détection des tailles cassées
+        run: python tailles_cassees.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sortie-tailles
+          path: docs/tailles_cassees_gmc.tsv
+          if-no-files-found: warn
+          retention-days: 2
+
   # ── JOB 3 : contenu éditorial (référentiel descriptions) ───
   descriptions:
     needs: lecture-flux
