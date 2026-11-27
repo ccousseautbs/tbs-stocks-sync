@@ -10,10 +10,16 @@ Règles, par modèle (item_group_id) :
 Les autres variantes reçoivent 'ok' : un modèle réassorti retrouve sa diffusion
 au passage suivant.
 
-Réglages à déplacer dans config.py (préfixe TC_).
+Réglages : config.py (préfixe TC_).
 """
 import csv
 from collections import defaultdict
+from config import (
+    TC_MIN_TAILLES, TC_NB_EXTREMES, TC_NB_EXTREMES_PETITE, TC_SEUIL_GRILLE_LONGUE,
+    TC_GRILLE_MIN_REGLE_2, TC_CHAMP_LABEL, TC_FICHIER_SORTIE,
+    TC_COL_ID, TC_COL_GROUPE, TC_COL_TAILLE, TC_COL_DISPO,
+    CACHE_DIR, SORTIE_DIR,
+)
 
 ORDRE_LETTRES = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL"]
 ALIAS = {"2XL": "XXL", "XXXL": "3XL"}
@@ -177,6 +183,6 @@ def charger_flux(dossier="cache"):
 
 if __name__ == "__main__":
     import os
-    os.makedirs("docs", exist_ok=True)
-    lignes, cols = charger_flux("cache")
-    run(lignes, "docs", cols)
+    os.makedirs(SORTIE_DIR, exist_ok=True)
+    lignes, cols = charger_flux(CACHE_DIR)
+    run(lignes, SORTIE_DIR, cols)
