@@ -5,6 +5,21 @@ Tous les réglages modifiables sont ici. Les scripts n'ont pas besoin d'être to
 pour changer une URL, un seuil, le modèle Gemini ou les règles d'accessoires.
 """
 
+# --- À déplacer dans config.py -------------------------------------------
+TC_MIN_TAILLES = 2
+TC_NB_EXTREMES = 2            # tailles "extrêmes" de chaque côté, grilles longues
+TC_NB_EXTREMES_PETITE = 1     # idem, grilles courtes
+TC_SEUIL_GRILLE_LONGUE = 8
+TC_GRILLE_MIN_REGLE_2 = 4     # en dessous, seule la règle 1 s'applique
+TC_CHAMP_LABEL = "custom label 1"
+TC_FICHIER_SORTIE = "tailles_cassees_gmc.tsv"
+# Noms des champs dans le cache du flux (à ajuster)
+TC_COL_ID = "id"
+TC_COL_GROUPE = "item_group_id"
+TC_COL_TAILLE = "size"
+TC_COL_DISPO = "availability"
+# ---------------------------------------------------------------------------
+
 # ─── SOURCES ────────────────────────────────────────────────
 URL_FLUX_GMC     = 'https://feeds.lengow.io/3/jzdj298'          # flux canal Google (séparateur |)
 URL_CATALOGUE    = 'https://tbs.fr/Storage/Lengow/Lengow.csv'   # catalogue Lengow (séparateur ,)
