@@ -16,11 +16,11 @@ TC_FICHIER_SORTIE = "tailles_cassees_gmc.tsv"
 # Noms des champs dans le cache du flux (à ajuster)
 # Noms de colonnes candidats, testés dans l'ordre (casse et préfixe "g:" ignorés).
 # Mettre le vrai nom en tête de liste une fois identifié dans les logs.
-TC_COL_ID = ["id", "item_id", "offer_id", "sku"]
-TC_COL_GROUPE = ["item_group_id", "parent_id", "id_parent", "parent_sku", "group_id"]
-TC_COL_TAILLE = ["size", "taille", "size_eu", "pointure"]
-TC_COL_DISPO = ["availability", "disponibilite", "disponibilité", "stock_status",
-                "quantity", "quantite", "quantité", "stock"]
+TC_COL_ID = ["offer_id", "id", "item_id", "sku"]
+TC_COL_GROUPE = ["product_attributes.item_group_id", "item_group_id", "parent_id", "id_parent", "parent_sku", "group_id"]
+TC_COL_TAILLE = ["product_attributes.size", "size", "taille", "size_eu", "pointure"]
+TC_COL_DISPO = ["product_attributes.availability", "availability", "disponibilite", "disponibilité",
+                "stock_status", "quantity", "quantite", "quantité", "stock"]
 # ---------------------------------------------------------------------------
 
 # ─── SOURCES ────────────────────────────────────────────────
