@@ -186,7 +186,7 @@ jobs:
         run: |
           mkdir -p site/rapports
           for f in inventaire_magasin.csv exclusions_locales_gmc.csv enrichissement_gmc.tsv tailles_cassees_gmc.tsv \
-          rapports/descriptions_a_rediger.csv rapports/descriptions_revue.csv rapports/qr_a_revoir.csv; do
+                   rapports/descriptions_a_rediger.csv rapports/descriptions_revue.csv rapports/qr_a_revoir.csv; do
             if [ ! -s "site/$f" ]; then
               echo "⚠️ $f absent cette nuit : reprise de la version publiée"
               curl -sf "$PAGES_URL/$f" -o "site/$f" || { echo "❌ $f introuvable sur Pages"; rm -f "site/$f"; }
